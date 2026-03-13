@@ -1,0 +1,109 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "Sail Operator",
+  "projectDescription": "Kubernetes operator for managing the lifecycle of Istio service mesh control planes.",
+  "theme": "aspen",
+  "primaryColor": "#446cb4",
+  "lightColor": "#9cb4d4",
+  "darkColor": "#d7dfed",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/overview",
+              "concepts/custom-resources",
+              "concepts/revisions",
+              "concepts/update-strategies"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/sidecar-mode",
+              "deployment/ambient-mode",
+              "deployment/helm-installation",
+              "deployment/openshift"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/upgrading",
+              "operations/configuration",
+              "operations/observability",
+              "operations/troubleshooting"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/multicluster",
+              "advanced/multiple-control-planes",
+              "advanced/plugin-ca",
+              "advanced/external-control-plane",
+              "advanced/dual-stack"
+            ]
+          },
+          {
+            "group": "Migration",
+            "pages": [
+              "migration/from-istioctl",
+              "migration/sidecar-to-ambient"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Custom Resources",
+            "pages": [
+              "api/istio",
+              "api/istio-revision",
+              "api/istio-revision-tag",
+              "api/istio-cni",
+              "api/ztunnel"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "api/helm-values",
+              "api/profiles"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Kubernetes operator for Istio control plane lifecycle management",
+    "Support for both sidecar and ambient mesh modes",
+    "Revision-based and in-place upgrade strategies",
+    "Multi-cluster and multi-control plane deployments",
+    "Helm-based configuration with custom resources",
+    "Version management supporting n-2 Istio releases"
+  ],
+  "publicApiSurface": [
+    "Istio (Custom Resource)",
+    "IstioRevision (Custom Resource)",
+    "IstioRevisionTag (Custom Resource)",
+    "IstioCNI (Custom Resource)",
+    "ZTunnel (Custom Resource)",
+    "sailoperator.io/v1 API",
+    "Helm chart: sail-operator"
+  ]
+}
