@@ -1,0 +1,191 @@
+---
+title: IstioRevisionTag
+description: IstioRevisionTag resource API reference for the Sail Operator
+---
+
+The `IstioRevisionTag` resource references an `Istio` or `IstioRevision` object and serves as an alias for sidecar injection. It can be used to manage stable revision tags without having to use `istioctl` or Helm directly.
+
+<Info>
+Revision tags are commonly used for canary upgrades, allowing you to gradually migrate workloads to a new Istio version. See [Istio's stable revision labels documentation](https://istio.io/latest/docs/setup/upgrade/canary/#stable-revision-labels) for more information.
+</Info>
+
+## Specification
+
+### Metadata
+
+<ParamField path="apiVersion" type="string" required>
+  `sailoperator.io/v1`
+</ParamField>
+
+<ParamField path="kind" type="string" required>
+  `IstioRevisionTag`
+</ParamField>
+
+<ParamField path="metadata.name" type="string" required>
+  Name of the IstioRevisionTag resource. This name will be used as the revision label value for sidecar injection.
+</ParamField>
+
+### Spec
+
+<ParamField path="spec.targetRef" type="object" required>
+  Reference to the target Istio or IstioRevision resource.
+  
+  <Expandable title="properties">
+    <ParamField path="kind" type="string" required>
+      Kind of the target resource. Must be either `Istio` or `IstioRevision`.
+      
+      - When referencing an `Istio` object, the Sail Operator will automatically update the reference to the Istio object's active revision.
+      - When referencing an `IstioRevision` object, the tag points directly to that specific revision.
+    </ParamField>
+    
+    <ParamField path="name" type="string" required>
+      Name of the target resource.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Status
+
+The status subresource provides information about the current state of the IstioRevisionTag.
+
+<ParamField path="status.state" type="string">
+  Reports the current state of the object. Possible values include:
+  
+  - `Healthy` - The revision tag has been successfully reconciled and is in use
+  - `ReconcileError` - The reconciliation of the resource has failed, but will be retried
+  - `NameAlreadyExists` - An IstioRevision with the same name as the IstioRevisionTag already exists
+  - `RefNotFound` - The resource referenced by the tag's targetRef was not found
+</ParamField>
+
+<ParamField path="status.observedGeneration" type="integer">
+  The most recent generation observed for this IstioRevisionTag object.
+</ParamField>
+
+<ParamField path="status.istiodNamespace" type="string">
+  Stores the namespace of the corresponding Istiod instance.
+</ParamField>
+
+<ParamField path="status.istioRevision" type="string">
+  Stores the name of the referenced IstioRevision.
+</ParamField>
+
+<ParamField path="status.conditions" type="array">
+  Represents the latest available observations of the object's current state. Common condition types include:
+  
+  - **Reconciled**: Whether the controller has successfully reconciled the resources
+  - **InUse**: Whether the tag is being used by workloads
+</ParamField>
+
+## Conditions
+
+### Reconciled Condition
+
+Indicates whether the controller has successfully reconciled the resources defined through the CR.
+
+**Reasons:**
+- `ReconcileError` - The reconciliation of the resource has failed, but will be retried
+- `NameAlreadyExists` - An IstioRevision with the same name as the IstioRevisionTag already exists
+- `RefNotFound` - The resource referenced by the tag's targetRef was not found
+
+### InUse Condition
+
+Indicates whether any workload is configured to use the revision tag.
+
+**Reasons:**
+- `Healthy` - The tag is in use by workloads
+- `ReferencedByWorkloads` - The tag is referenced by at least one pod or namespace
+- `NotReferencedByAnything` - The tag is not referenced by any pod or namespace
+- `UsageCheckFailed` - The operator could not check whether any workloads use the tag
+
+## Examples
+
+### Stable Tag for Istio Resource
+
+This example creates a `default` tag that automatically tracks the active revision of the `default` Istio resource:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: default
+spec:
+  targetRef:
+    kind: Istio
+    name: default
+```
+
+### Tag for Specific Revision
+
+This example creates a `stable` tag that points to a specific IstioRevision:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: stable
+spec:
+  targetRef:
+    kind: IstioRevision
+    name: v1-29-1
+```
+
+### Complete Revision-Based Setup
+
+This example shows a complete setup with an Istio resource using RevisionBased strategy and a default tag:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+---
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: default
+spec:
+  targetRef:
+    kind: Istio
+    name: default
+```
+
+## Usage with Workloads
+
+Once you've created an IstioRevisionTag, you can use it to control sidecar injection:
+
+### Namespace-level Injection
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: my-app
+  labels:
+    istio.io/rev: default  # Uses the 'default' revision tag
+```
+
+### Pod-level Injection
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+  labels:
+    istio.io/rev: stable  # Uses the 'stable' revision tag
+spec:
+  containers:
+  - name: app
+    image: my-app:v1
+```
+
+## Related Resources
+
+- [Istio](/api/istio) - Can be referenced by IstioRevisionTag
+- [IstioRevision](/api/istio-revision) - Can be referenced by IstioRevisionTag
+- [Canary Upgrades](https://istio.io/latest/docs/setup/upgrade/canary/) - Official Istio documentation on canary upgrades

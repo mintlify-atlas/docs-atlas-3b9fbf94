@@ -1,0 +1,493 @@
+---
+title: Installation
+description: Complete installation guide for the Sail Operator covering all deployment methods
+---
+
+The Sail Operator can be installed using multiple methods depending on your environment and requirements. This guide covers all available installation methods.
+
+## Prerequisites
+
+<Tabs>
+  <Tab title="Kubernetes">
+    - Kubernetes cluster version 1.27 or later
+    - Admin permissions (`cluster-admin` role)
+    - `kubectl` configured to access your cluster
+    - [Helm](https://helm.sh/docs/intro/install/) version 3.6 or later (for Helm installation)
+  </Tab>
+  <Tab title="OpenShift">
+    - OpenShift Container Platform version 4.14 or later
+    - User with `cluster-admin` role
+    - Access to the OpenShift web console or `oc` CLI
+    - [Helm](https://helm.sh/docs/intro/install/) version 3.6 or later (for Helm installation)
+  </Tab>
+</Tabs>
+
+<Note>
+For local development and testing, you can use [KIND](https://sigs.k8s.io/kind) to create a local Kubernetes cluster:
+
+```bash
+make cluster
+```
+</Note>
+
+## Installation Methods
+
+### Helm Installation (Recommended)
+
+Helm is the recommended method for installing the Sail Operator in production environments.
+
+<Steps>
+  <Step title="Add the Helm repository">
+    ```bash
+    helm repo add sail-operator https://istio-ecosystem.github.io/sail-operator
+    helm repo update
+    ```
+  </Step>
+
+  <Step title="List available versions">
+    ```bash
+    helm search repo sail-operator --versions
+    ```
+
+    This shows all available operator versions. Choose the version that matches your requirements.
+  </Step>
+
+  <Step title="Create the operator namespace">
+    ```bash
+    kubectl create namespace sail-operator
+    ```
+
+    <Note>
+    You can skip this step by using the `--create-namespace` flag in the next step.
+    </Note>
+  </Step>
+
+  <Step title="Install the operator">
+    ```bash
+    helm install sail-operator sail-operator/sail-operator \
+      --namespace sail-operator \
+      --version 1.29.0
+    ```
+
+    The operator manages Custom Resource Definitions (CRDs) and will deploy the necessary resources to manage Istio control planes.
+  </Step>
+
+  <Step title="Verify the installation">
+    Check the Helm release:
+
+    ```bash
+    helm ls -n sail-operator
+    ```
+
+    Verify the operator deployment:
+
+    ```bash
+    kubectl get deployment -n sail-operator
+    ```
+
+    Output:
+
+    ```
+    NAME            READY   UP-TO-DATE   AVAILABLE   AGE
+    sail-operator   1/1     1            1           30s
+    ```
+
+    Check operator pods:
+
+    ```bash
+    kubectl get pods -n sail-operator
+    ```
+
+    Output:
+
+    ```
+    NAME                             READY   STATUS    RESTARTS   AGE
+    sail-operator-79c7d9ffb9-bwfdf   1/1     Running   0          30s
+    ```
+  </Step>
+</Steps>
+
+#### Customizing the Helm Installation
+
+You can customize the operator installation using Helm values:
+
+<CodeGroup>
+```bash Custom values file
+helm install sail-operator sail-operator/sail-operator \
+  --namespace sail-operator \
+  --version 1.29.0 \
+  --values custom-values.yaml
+```
+
+```bash Inline values
+helm install sail-operator sail-operator/sail-operator \
+  --namespace sail-operator \
+  --version 1.29.0 \
+  --set image=quay.io/sail-dev/sail-operator:1.29.0 \
+  --set operator.resources.limits.memory=1024Mi
+```
+
+```yaml custom-values.yaml
+image: quay.io/sail-dev/sail-operator:1.29.0
+
+operator:
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1024Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+operatorLogLevel: debug
+```
+</CodeGroup>
+
+### OpenShift OLM Installation
+
+On OpenShift, you can install the Sail Operator through the OperatorHub using the Operator Lifecycle Manager (OLM).
+
+<Tabs>
+  <Tab title="Web Console">
+    <Steps>
+      <Step title="Navigate to OperatorHub">
+        1. Log in to the OpenShift web console
+        2. Click **Operators** → **OperatorHub** in the left navigation
+      </Step>
+
+      <Step title="Find the Sail Operator">
+        1. Search for "sail" in the search box
+        2. Click on the **Sail Operator** tile
+      </Step>
+
+      <Step title="Install the operator">
+        1. Click **Continue** when prompted about the community operator
+        2. Click **Install**
+        3. Use the default installation settings
+        4. Click **Install** to begin the installation
+      </Step>
+
+      <Step title="Verify installation">
+        1. Navigate to **Operators** → **Installed Operators**
+        2. Verify that **Sail Operator** shows `Succeeded` in the Status column
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="CLI">
+    <Steps>
+      <Step title="Create the namespace">
+        ```bash
+        kubectl create namespace openshift-operators
+        ```
+
+        <Note>
+        This namespace may already exist on your cluster.
+        </Note>
+      </Step>
+
+      <Step title="Create a Subscription">
+        ```bash
+        kubectl apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: sailoperator
+          namespace: openshift-operators
+        spec:
+          channel: "0.1-nightly"
+          installPlanApproval: Automatic
+          name: sailoperator
+          source: community-operators
+          sourceNamespace: openshift-marketplace
+        EOF
+        ```
+      </Step>
+
+      <Step title="Verify the installation">
+        ```bash
+        kubectl get csv -n openshift-operators
+        ```
+
+        Look for the Sail Operator with `Succeeded` in the PHASE column:
+
+        ```
+        NAME                                     DISPLAY         VERSION                    PHASE
+        sailoperator.v0.1.0-nightly-2024-06-25   Sail Operator   0.1.0-nightly-2024-06-25   Succeeded
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+### Installation from Source
+
+For development or if you need to build from source:
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/istio-ecosystem/sail-operator.git
+    cd sail-operator
+    ```
+  </Step>
+
+  <Step title="Set up your environment">
+    For a local KIND cluster:
+
+    ```bash
+    export HUB=localhost:5000
+    make cluster
+    ```
+
+    For a remote cluster, set your image repository:
+
+    ```bash
+    export HUB=your-registry.io/your-org
+    export TAG=your-tag
+    ```
+  </Step>
+
+  <Step title="Deploy the operator">
+    <Tabs>
+      <Tab title="Standard Deployment">
+        ```bash
+        make deploy
+        ```
+      </Tab>
+      <Tab title="OLM Deployment">
+        ```bash
+        make deploy-olm
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Verify the deployment">
+    ```bash
+    kubectl get pods -n sail-operator
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+When building from source, ensure your container image repository is publicly accessible or that your cluster has the appropriate pull secrets configured.
+</Warning>
+
+## Namespace Setup
+
+After installing the operator, create the necessary namespaces for your Istio deployment:
+
+<Tabs>
+  <Tab title="Sidecar Mode">
+    For standard sidecar-based service mesh:
+
+    ```bash
+    kubectl create namespace istio-system
+    ```
+
+    On OpenShift, you also need the CNI namespace:
+
+    ```bash
+    kubectl create namespace istio-cni
+    ```
+  </Tab>
+
+  <Tab title="Ambient Mode">
+    For ambient mesh, create all three namespaces:
+
+    ```bash
+    kubectl create namespace istio-system
+    kubectl create namespace istio-cni
+    kubectl create namespace ztunnel
+    ```
+  </Tab>
+</Tabs>
+
+## Deploy Istio Control Plane
+
+Once the operator and namespaces are ready, deploy the Istio control plane:
+
+<Tabs>
+  <Tab title="Sidecar Mode">
+    ```bash
+    kubectl apply -f - <<EOF
+    apiVersion: sailoperator.io/v1
+    kind: Istio
+    metadata:
+      name: default
+    spec:
+      version: v1.29.1
+      namespace: istio-system
+      updateStrategy:
+        type: InPlace
+        inactiveRevisionDeletionGracePeriodSeconds: 30
+    EOF
+    ```
+
+    On OpenShift, also deploy IstioCNI:
+
+    ```bash
+    kubectl apply -f - <<EOF
+    apiVersion: sailoperator.io/v1
+    kind: IstioCNI
+    metadata:
+      name: default
+    spec:
+      version: v1.29.1
+      namespace: istio-cni
+    EOF
+    ```
+  </Tab>
+
+  <Tab title="Ambient Mode">
+    Deploy all three components:
+
+    ```bash
+    # Deploy Istio control plane
+    kubectl apply -f - <<EOF
+    apiVersion: sailoperator.io/v1
+    kind: Istio
+    metadata:
+      name: default
+    spec:
+      version: v1.29.1
+      namespace: istio-system
+      profile: ambient
+      updateStrategy:
+        type: InPlace
+        inactiveRevisionDeletionGracePeriodSeconds: 30
+      values:
+        pilot:
+          trustedZtunnelNamespace: "ztunnel"
+    EOF
+
+    # Deploy IstioCNI
+    kubectl apply -f - <<EOF
+    apiVersion: sailoperator.io/v1
+    kind: IstioCNI
+    metadata:
+      name: default
+    spec:
+      version: v1.29.1
+      profile: ambient
+      namespace: istio-cni
+    EOF
+
+    # Deploy ZTunnel
+    kubectl apply -f - <<EOF
+    apiVersion: sailoperator.io/v1
+    kind: ZTunnel
+    metadata:
+      name: default
+    spec:
+      version: v1.29.1
+      namespace: ztunnel
+    EOF
+    ```
+  </Tab>
+</Tabs>
+
+## Verify the Installation
+
+<Steps>
+  <Step title="Check Istio status">
+    ```bash
+    kubectl get istio -n istio-system
+    ```
+
+    Wait for the STATUS to show `Healthy`:
+
+    ```
+    NAME      REVISIONS   READY   IN USE   ACTIVE REVISION   STATUS    VERSION
+    default   1           1       1        default           Healthy   v1.29.1
+    ```
+  </Step>
+
+  <Step title="Verify components">
+    Check that all components are running:
+
+    <Tabs>
+      <Tab title="Sidecar Mode">
+        ```bash
+        kubectl get pods -n istio-system
+        ```
+
+        On OpenShift:
+
+        ```bash
+        kubectl get pods -n istio-system
+        kubectl get pods -n istio-cni
+        ```
+      </Tab>
+
+      <Tab title="Ambient Mode">
+        ```bash
+        kubectl get pods -n istio-system
+        kubectl get pods -n istio-cni
+        kubectl get pods -n ztunnel
+        ```
+
+        Verify all custom resources:
+
+        ```bash
+        kubectl get istio,istiocni,ztunnel
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Check IstioRevision">
+    ```bash
+    kubectl get istiorevision
+    ```
+
+    The revision should show as `Healthy`:
+
+    ```
+    NAME      TYPE     READY   STATUS    IN USE   VERSION   AGE
+    default   Local    True    Healthy   True     v1.29.1   5m
+    ```
+  </Step>
+</Steps>
+
+## Supported Istio Versions
+
+The Sail Operator follows an n-2 support policy, meaning it supports the current and two previous minor versions of Istio. For example:
+
+- Sail Operator 1.29.x supports Istio 1.27.x, 1.28.x, and 1.29.x
+
+To check supported versions for your operator installation:
+
+```bash
+helm show chart sail-operator/sail-operator | grep -A 20 "longDescription"
+```
+
+<Note>
+If you don't specify `spec.version` in your Istio resource, the operator will use its default supported version. For production, always specify the version explicitly.
+</Note>
+
+## Component Version Compatibility
+
+When running multiple Istio components (control plane, IstioCNI, ZTunnel), each component at version `1.x` is compatible with other components at versions `1.x-1`, `1.x`, and `1.x+1`.
+
+For best results:
+- Keep all components at the same version
+- Follow the recommended upgrade order: control plane → IstioCNI → ZTunnel
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Deployment Modes" icon="network-wired" href="/deployment/sidecar-mode">
+    Learn about sidecar and ambient deployment modes
+  </Card>
+  <Card title="Configure Istio" icon="sliders" href="/api/istio">
+    Customize your Istio installation
+  </Card>
+  <Card title="Upgrades" icon="arrow-up" href="/operations/upgrading">
+    Upgrade your Istio control plane
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Troubleshoot common issues
+  </Card>
+</CardGroup>

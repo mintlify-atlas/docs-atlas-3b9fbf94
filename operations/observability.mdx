@@ -1,0 +1,657 @@
+---
+title: Observability
+description: Monitor and observe the Sail Operator, Istio control plane, and service mesh using metrics, logs, and tracing
+---
+
+Observability is critical for operating Istio at scale. This guide covers monitoring the Sail Operator, Istio control plane, and your service mesh.
+
+## Architecture Overview
+
+Observability in Sail Operator deployments involves:
+
+1. **Operator Metrics** - Sail Operator health and reconciliation status
+2. **Control Plane Metrics** - Istiod, IstioCNI, ZTunnel metrics
+3. **Data Plane Metrics** - Proxy (sidecar/ztunnel) metrics
+4. **Logs** - Structured logs from all components
+5. **Traces** - Distributed tracing through the mesh
+
+## Metrics Collection
+
+### Operator Metrics
+
+The Sail Operator exposes Prometheus metrics on port `8080` at `/metrics`.
+
+**Key Operator Metrics:**
+
+- `controller_runtime_reconcile_total` - Total reconciliation attempts
+- `controller_runtime_reconcile_errors_total` - Failed reconciliations
+- `controller_runtime_reconcile_time_seconds` - Reconciliation duration
+- `workqueue_depth` - Work queue depth
+- `workqueue_adds_total` - Items added to work queue
+
+**Accessing Operator Metrics:**
+
+```bash
+# Port-forward to operator pod
+kubectl port-forward -n sail-operator deploy/sail-operator 8080:8080
+
+# Query metrics
+curl http://localhost:8080/metrics
+```
+
+### Control Plane Metrics
+
+Istiod exposes metrics on port `15014` at `/metrics`.
+
+**Key Istiod Metrics:**
+
+- `pilot_xds_pushes` - XDS configuration pushes
+- `pilot_xds_push_time` - XDS push duration
+- `pilot_proxy_convergence_time` - Proxy convergence time
+- `pilot_conflict_inbound_listener` - Configuration conflicts
+- `pilot_total_xds_rejects` - Rejected configurations
+- `pilot_virt_services` - Virtual services
+- `pilot_services` - Registered services
+- `galley_validation_passed` - Validation successes
+- `galley_validation_failed` - Validation failures
+
+**Accessing Istiod Metrics:**
+
+```bash
+# Port-forward to istiod
+kubectl port-forward -n istio-system deploy/istiod-<revision> 15014:15014
+
+# Query metrics
+curl http://localhost:15014/metrics
+```
+
+### Data Plane Metrics
+
+Envoy proxies (sidecars) expose metrics on port `15090` at `/stats/prometheus`.
+
+**Key Proxy Metrics:**
+
+- `istio_requests_total` - Total requests through proxy
+- `istio_request_duration_milliseconds` - Request latency
+- `istio_request_bytes` - Request size
+- `istio_response_bytes` - Response size
+- `envoy_cluster_upstream_cx_total` - Upstream connections
+- `envoy_cluster_upstream_rq_total` - Upstream requests
+
+**Accessing Proxy Metrics:**
+
+```bash
+# Get metrics from a specific pod
+kubectl exec -n bookinfo <pod-name> -c istio-proxy -- \
+  curl http://localhost:15090/stats/prometheus
+```
+
+## OpenShift Monitoring Integration
+
+Integrate Istio with OpenShift's user-workload monitoring stack for production-grade observability.
+
+### Prerequisites
+
+- OpenShift 4.x cluster
+- User Workload Monitoring [enabled](https://docs.openshift.com/container-platform/latest/observability/monitoring/enabling-monitoring-for-user-defined-projects.html)
+
+### Configure ServiceMonitor for Istiod
+
+Create a ServiceMonitor to scrape istiod metrics:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: istiod-monitor
+  namespace: istio-system
+spec:
+  targetLabels:
+    - app
+  selector:
+    matchLabels:
+      istio: pilot
+  endpoints:
+    - port: http-monitoring
+      interval: 30s
+      path: /metrics
+```
+
+Apply the configuration:
+
+```bash
+kubectl apply -f istiod-servicemonitor.yaml
+```
+
+### Configure PodMonitor for Proxies
+
+Create a PodMonitor in **each namespace** where sidecars run:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: istio-proxies-monitor
+  namespace: istio-system  # Create in each application namespace
+spec:
+  selector:
+    matchExpressions:
+      - key: istio-prometheus-ignore
+        operator: DoesNotExist
+  podMetricsEndpoints:
+    - path: /stats/prometheus
+      interval: 30s
+      relabelings:
+        - action: keep
+          sourceLabels: ["__meta_kubernetes_pod_container_name"]
+          regex: "istio-proxy"
+        - action: keep
+          sourceLabels: ["__meta_kubernetes_pod_annotationpresent_prometheus_io_scrape"]
+        # IPv6 support
+        - action: replace
+          regex: (\d+);(([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})
+          replacement: "[$2]:$1"
+          sourceLabels: ["__meta_kubernetes_pod_annotation_prometheus_io_port","__meta_kubernetes_pod_ip"]
+          targetLabel: "__address__"
+        # IPv4 support
+        - action: replace
+          regex: (\d+);((([0-9]+?)(\.|$)){4})
+          replacement: "$2:$1"
+          sourceLabels: ["__meta_kubernetes_pod_annotation_prometheus_io_port","__meta_kubernetes_pod_ip"]
+          targetLabel: "__address__"
+        - action: labeldrop
+          regex: "__meta_kubernetes_pod_label_(.+)"
+        - sourceLabels: ["__meta_kubernetes_namespace"]
+          action: replace
+          targetLabel: namespace
+        - sourceLabels: ["__meta_kubernetes_pod_name"]
+          action: replace
+          targetLabel: pod_name
+```
+
+### Query Metrics in OpenShift Console
+
+1. Navigate to **Observe → Metrics**
+2. Try these queries:
+
+```promql
+# Total requests
+istio_requests_total
+
+# Request rate by service
+rate(istio_requests_total[5m])
+
+# P95 latency
+histogram_quantile(0.95, 
+  rate(istio_request_duration_milliseconds_bucket[5m])
+)
+
+# Istiod push rate
+rate(pilot_xds_pushes[5m])
+```
+
+## Prometheus Integration
+
+For non-OpenShift Kubernetes clusters, deploy Prometheus with appropriate scrape configs.
+
+### Prometheus Scrape Configuration
+
+```yaml
+scrape_configs:
+  # Scrape istiod
+  - job_name: 'istiod'
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+            - istio-system
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: istiod;http-monitoring
+
+  # Scrape envoy sidecars
+  - job_name: 'envoy-stats'
+    metrics_path: /stats/prometheus
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_name]
+        action: keep
+        regex: 'istio-proxy'
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:15090
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod_name
+```
+
+## Distributed Tracing
+
+Configure distributed tracing to visualize request flows through your mesh.
+
+### Enable Tracing in Istio
+
+Configure the mesh to send traces to your tracing backend:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    meshConfig:
+      enableTracing: true
+      defaultConfig:
+        tracing:
+          sampling: 100.0  # 100% sampling for testing, reduce in production
+          max_path_tag_length: 256
+      extensionProviders:
+        - name: otel-tracing
+          opentelemetry:
+            service: otel-collector.istio-system.svc.cluster.local
+            port: 4317
+```
+
+### Activate Tracing with Telemetry Resource
+
+```yaml
+apiVersion: telemetry.istio.io/v1
+kind: Telemetry
+metadata:
+  name: mesh-default
+  namespace: istio-system
+spec:
+  tracing:
+    - providers:
+        - name: otel-tracing
+      randomSamplingPercentage: 1.0  # 1% sampling in production
+```
+
+### OpenShift Distributed Tracing (Tempo)
+
+Integrate with OpenShift's Tempo-based distributed tracing:
+
+**Prerequisites:**
+- Tempo stack installed
+- OpenTelemetry collector configured in istio-system
+
+**Configure Istio:**
+
+```yaml
+values:
+  meshConfig:
+    enableTracing: true
+    extensionProviders:
+      - name: otel-tracing
+        opentelemetry:
+          port: 4317
+          service: otel-collector.istio-system.svc.cluster.local
+          resource_detectors:
+            environment: {}
+```
+
+**Generate test traffic:**
+
+```bash
+# Deploy bookinfo
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.29/samples/bookinfo/platform/kube/bookinfo.yaml
+
+# Generate traffic
+for i in {1..100}; do
+  curl http://$GATEWAY_URL/productpage
+  sleep 1
+done
+```
+
+**View traces:**
+
+```bash
+# Get Tempo query frontend URL
+kubectl get routes -n tempo tempo-sample-query-frontend-tempo
+```
+
+## Kiali Integration
+
+Kiali provides visualization and management for Istio service mesh.
+
+### Kiali with OpenShift Monitoring
+
+**Prerequisites:**
+- Kiali Operator installed
+- User workload monitoring configured (see above)
+
+**Create ClusterRoleBinding:**
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kiali-monitoring-rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: kiali-service-account
+    namespace: istio-system
+```
+
+**Deploy Kiali:**
+
+```yaml
+apiVersion: kiali.io/v1alpha1
+kind: Kiali
+metadata:
+  name: kiali
+  namespace: istio-system
+spec:
+  external_services:
+    istio:
+      config_map_name: istio-<revision>
+      istio_sidecar_injector_config_map_name: istio-sidecar-injector-<revision>
+      istiod_deployment_name: istiod-<revision>
+      url_service_version: 'http://istiod-<revision>.istio-system:15014/version'
+    prometheus:
+      auth:
+        type: bearer
+        use_kiali_token: true
+      thanos_proxy:
+        enabled: true
+      url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+```
+
+**Find your revision name:**
+
+```bash
+kubectl get istiorevisions
+# NAME              TYPE    READY   STATUS    IN USE   VERSION   AGE
+# default-v1-29-1   Local   True    Healthy   True     v1.29.1   10m
+```
+
+Replace `<revision>` with your revision name (e.g., `default-v1-29-1`).
+
+### Kiali with Distributed Tracing
+
+```yaml
+spec:
+  external_services:
+    grafana:
+      enabled: true
+      url: "http://grafana.istio-system.svc:3000"
+    tracing:
+      enabled: true
+      provider: tempo
+      use_grpc: false
+      in_cluster_url: http://tempo-sample-query-frontend.tempo:3200
+      url: 'https://tempo-sample-query-frontend-tempo.apps.example.com'
+      tempo_config:
+        org_id: "1"
+        datasource_uid: "tempo-datasource-uid"
+```
+
+## Logging
+
+### Control Plane Logs
+
+**Istiod logs:**
+
+```bash
+# Stream istiod logs
+kubectl logs -n istio-system -l app=istiod -f
+
+# Filter for errors
+kubectl logs -n istio-system -l app=istiod | grep -i error
+
+# Specific component logs
+kubectl logs -n istio-system -l app=istiod -c discovery
+```
+
+**Operator logs:**
+
+```bash
+kubectl logs -n sail-operator -l app.kubernetes.io/name=sail-operator -f
+```
+
+### Configuring Log Levels
+
+**Istiod logging:**
+
+```yaml
+values:
+  global:
+    logging:
+      level: "default:info,ads:debug,xds:debug"
+```
+
+Available levels: `none`, `error`, `warn`, `info`, `debug`
+
+**Proxy logging:**
+
+```yaml
+values:
+  meshConfig:
+    accessLogFile: /dev/stdout
+    accessLogEncoding: JSON
+    accessLogFormat: |
+      {
+        "start_time": "%START_TIME%",
+        "method": "%REQ(:METHOD)%",
+        "path": "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%",
+        "protocol": "%PROTOCOL%",
+        "response_code": "%RESPONSE_CODE%",
+        "duration": "%DURATION%",
+        "upstream_host": "%UPSTREAM_HOST%"
+      }
+```
+
+### Proxy Logs
+
+**Access application proxy logs:**
+
+```bash
+# View proxy logs
+kubectl logs -n bookinfo <pod-name> -c istio-proxy
+
+# Stream logs
+kubectl logs -n bookinfo <pod-name> -c istio-proxy -f
+
+# Change log level dynamically
+istioctl proxy-config log <pod-name> -n bookinfo --level debug
+```
+
+### Structured Logging
+
+Enable JSON structured logs for better parsing:
+
+```yaml
+values:
+  global:
+    logAsJson: true
+  pilot:
+    env:
+      PILOT_ENABLE_PROTOCOL_SNIFFING_FOR_OUTBOUND: "true"
+      PILOT_ENABLE_PROTOCOL_SNIFFING_FOR_INBOUND: "true"
+```
+
+## Ambient Mode Observability
+
+### ZTunnel Metrics
+
+ZTunnel exposes metrics on port `15020`:
+
+```bash
+# Access ztunnel metrics
+kubectl exec -n ztunnel <ztunnel-pod> -- \
+  curl http://localhost:15020/metrics
+```
+
+**Key ZTunnel metrics:**
+
+- `ztunnel_connection_opens_total` - New connections
+- `ztunnel_connection_closes_total` - Closed connections
+- `ztunnel_xds_connected` - XDS connection status
+- `ztunnel_tcp_bytes_sent` - Bytes sent
+- `ztunnel_tcp_bytes_recv` - Bytes received
+
+### ZTunnel Logs
+
+```bash
+kubectl logs -n ztunnel <ztunnel-pod> -f
+```
+
+### Ambient Workload Verification
+
+```bash
+# List ambient workloads
+istioctl ztunnel-config workloads --namespace ztunnel
+
+# Check specific namespace
+istioctl ztunnel-config workloads --namespace ztunnel | grep bookinfo
+```
+
+## Health Checks
+
+### Control Plane Health
+
+**Istiod health endpoint:**
+
+```bash
+kubectl exec -n istio-system deploy/istiod-<revision> -- \
+  curl http://localhost:15014/ready
+```
+
+**Check all components:**
+
+```bash
+# Istio resources
+kubectl get istio,istiorevision,istiocni,ztunnel --all-namespaces
+
+# Pods status
+kubectl get pods -n istio-system
+kubectl get pods -n istio-cni
+kubectl get pods -n ztunnel
+```
+
+### Proxy Health
+
+```bash
+# Check proxy sync status
+istioctl proxy-status
+
+# Specific pod
+istioctl proxy-status <pod>.<namespace>
+```
+
+## Alerting
+
+### Recommended Alerts
+
+**Control plane alerts:**
+
+```yaml
+# Istiod down
+alert: IstiodDown
+expr: up{job="istiod"} == 0
+for: 5m
+annotations:
+  summary: "Istiod is down"
+
+# High XDS reject rate
+alert: HighXDSRejectRate
+expr: rate(pilot_total_xds_rejects[5m]) > 10
+for: 5m
+annotations:
+  summary: "High rate of XDS config rejections"
+```
+
+**Data plane alerts:**
+
+```yaml
+# High 5xx error rate
+alert: High5xxRate
+expr: |
+  sum(rate(istio_requests_total{response_code=~"5.."}[5m])) by (destination_workload, destination_workload_namespace) 
+  / 
+  sum(rate(istio_requests_total[5m])) by (destination_workload, destination_workload_namespace) 
+  > 0.05
+for: 5m
+annotations:
+  summary: "High 5xx error rate for {{ $labels.destination_workload }}"
+
+# Proxy disconnected
+alert: ProxyDisconnected
+expr: pilot_proxy_convergence_time > 60
+for: 5m
+annotations:
+  summary: "Proxy convergence taking too long"
+```
+
+## Dashboard Examples
+
+### Grafana Dashboards
+
+Recommended Istio Grafana dashboards:
+
+- **Istio Control Plane Dashboard** - Istiod health and performance
+- **Istio Mesh Dashboard** - Service-level metrics
+- **Istio Service Dashboard** - Individual service metrics
+- **Istio Workload Dashboard** - Pod-level metrics
+- **Istio Performance Dashboard** - Latency and throughput
+
+Import official dashboards: https://grafana.com/grafana/dashboards/?search=istio
+
+### Custom Queries
+
+**Request success rate:**
+
+```promql
+sum(rate(istio_requests_total{response_code!~"5.."}[5m])) 
+/
+sum(rate(istio_requests_total[5m]))
+```
+
+**P99 latency by service:**
+
+```promql
+histogram_quantile(0.99,
+  sum(rate(istio_request_duration_milliseconds_bucket[5m])) 
+    by (destination_service_name, le)
+)
+```
+
+**Top services by traffic:**
+
+```promql
+topk(10, sum(rate(istio_requests_total[5m])) by (destination_service_name))
+```
+
+## Best Practices
+
+1. **Enable structured logging** for easier parsing and analysis
+2. **Use ServiceMonitor/PodMonitor** for automated metrics discovery
+3. **Set appropriate sampling rates** for tracing (1-10% in production)
+4. **Configure alerts** for control plane health
+5. **Monitor resource usage** of observability components
+6. **Centralize logs** in a log aggregation system
+7. **Retain metrics** according to your compliance requirements
+8. **Dashboard regularly** - unused dashboards become stale
+9. **Test observability** in non-production first
+10. **Document custom metrics** and their meaning
+
+## Further Reading
+
+- [Troubleshooting Guide](/operations/troubleshooting)
+- [Configuration Guide](/operations/configuration)
+- [Istio Observability Documentation](https://istio.io/latest/docs/tasks/observability/)
+- [Prometheus Best Practices](https://prometheus.io/docs/practices/naming/)

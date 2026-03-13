@@ -1,0 +1,170 @@
+---
+title: ZTunnel
+description: ZTunnel resource API reference for the Sail Operator
+---
+
+The `ZTunnel` resource represents a deployment of the Istio ztunnel component, which is the node proxy for Ambient mesh. ZTunnel provides Layer 4 (L4) functionality for the mesh, handling TCP traffic and providing mutual TLS between workloads.
+
+<Info>
+ZTunnel is required only for Ambient mesh deployments. The ZTunnel resource must be named `default` - this is enforced by validation.
+</Info>
+
+## Specification
+
+### Metadata
+
+<ParamField path="apiVersion" type="string" required>
+  `sailoperator.io/v1`
+</ParamField>
+
+<ParamField path="kind" type="string" required>
+  `ZTunnel`
+</ParamField>
+
+<ParamField path="metadata.name" type="string" required>
+  Must be `default`
+</ParamField>
+
+### Spec
+
+<ParamField path="spec.version" type="string" required default="v1.29.1">
+  Defines the version of Istio to install. Must be one of the supported versions.
+  
+  **Supported versions include:** v1.29-latest, v1.29.1, v1.29.0, v1.28-latest, v1.28.5, v1.28.4, v1.28.3, v1.28.2, v1.28.1, v1.28.0, v1.27-latest, v1.27.8, v1.27.7, v1.27.6, v1.27.5, v1.27.4, v1.27.3, v1.27.2, v1.27.1, v1.27.0, and others.
+</ParamField>
+
+<ParamField path="spec.namespace" type="string" default="ztunnel">
+  Namespace to which the Istio ztunnel component should be installed.
+</ParamField>
+
+<ParamField path="spec.values" type="object">
+  Defines the values to be passed to the Helm charts when installing Istio ztunnel. This includes ztunnel-specific configuration options.
+</ParamField>
+
+### Status
+
+The status subresource provides information about the current state of the ZTunnel deployment.
+
+<ParamField path="status.state" type="string">
+  Reports the current state of the object. Possible values include:
+  
+  - `Healthy` - The ztunnel is fully reconciled and all components are ready
+  - `ReconcileError` - The reconciliation of the resource has failed, but will be retried
+  - `DaemonSetNotReady` - The ztunnel DaemonSet is not ready
+  - `ReadinessCheckFailed` - The DaemonSet readiness status could not be ascertained
+</ParamField>
+
+<ParamField path="status.observedGeneration" type="integer">
+  The most recent generation observed for this ZTunnel object.
+</ParamField>
+
+<ParamField path="status.conditions" type="array">
+  Represents the latest available observations of the object's current state. Common condition types include:
+  
+  - **Reconciled**: Whether the controller has successfully reconciled the resources
+  - **Ready**: Whether the ztunnel DaemonSet is ready
+</ParamField>
+
+## Conditions
+
+### Reconciled Condition
+
+Indicates whether the controller has successfully reconciled the resources defined through the CR.
+
+**Reasons:**
+- `ReconcileError` - The reconciliation of the resource has failed, but will be retried
+
+### Ready Condition
+
+Indicates whether the ztunnel DaemonSet is ready.
+
+**Reasons:**
+- `Healthy` - The ztunnel is fully reconciled and all components are ready
+- `DaemonSetNotReady` - The ztunnel DaemonSet is not ready
+- `ReadinessCheckFailed` - The DaemonSet readiness status could not be ascertained
+
+## Examples
+
+### Basic Installation
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+```
+
+### Complete Ambient Mesh Setup
+
+For a complete Ambient mesh deployment, you need IstioCNI, ZTunnel, and Istio with the ambient profile:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+---
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+---
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  updateStrategy:
+    type: InPlace
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+  values:
+    pilot:
+      trustedZtunnelNamespace: "ztunnel"
+```
+
+## Understanding ZTunnel
+
+### What is ZTunnel?
+
+ZTunnel is the node proxy component of Istio's Ambient mesh. It provides:
+
+- **Layer 4 Processing**: Handles TCP traffic between workloads
+- **Mutual TLS**: Provides secure communication between services
+- **Zero Trust**: Enforces identity-based security policies
+- **No Sidecars**: Eliminates the need for sidecar containers
+
+### Architecture
+
+- Deployed as a **DaemonSet** on every node in the cluster
+- Runs in its own dedicated namespace (default: `ztunnel`)
+- Works in conjunction with IstioCNI to intercept and route traffic
+- Communicates with the Istio control plane for configuration
+
+### Requirements
+
+<Warning>
+Before deploying ZTunnel, ensure:
+1. IstioCNI is deployed with ambient mode enabled
+2. The Istio control plane is configured with the ambient profile
+3. The `spec.values.pilot.trustedZtunnelNamespace` in the Istio resource matches the ZTunnel namespace
+</Warning>
+
+## Related Resources
+
+- [Istio](/api/istio) - Must be configured with ambient profile when using ZTunnel
+- [IstioCNI](/api/istio-cni) - Required for Ambient mesh setup
+- [Profiles](/api/profiles) - Available installation profiles
+- [Ambient Mesh](https://istio.io/latest/docs/ambient/) - Official Istio Ambient mesh documentation

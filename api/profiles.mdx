@@ -1,0 +1,361 @@
+---
+title: Profiles
+description: Available Istio installation profiles for the Sail Operator
+---
+
+Istio provides several installation profiles that are optimized for different use cases. Profiles define a set of default configuration values that can be customized further using Helm values.
+
+<Info>
+Profiles are specified using the `spec.profile` field in Istio, IstioCNI, and ZTunnel resources. The `default` profile is always applied first, then the specified profile overlays its values on top.
+</Info>
+
+## Available Profiles
+
+### default
+
+The default profile is recommended for production deployments. It provides a balanced set of features and resource usage.
+
+**Characteristics:**
+- Enables Istio core functionality
+- Installs istiod (Istio control plane)
+- Configures sidecar injection
+- Suitable for most production use cases
+
+**Usage:**
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  # profile: default is implicit if not specified
+```
+
+### ambient
+
+The ambient profile is optimized for Istio Ambient mesh deployments, which eliminate the need for sidecar proxies.
+
+**Characteristics:**
+- Configures istiod for Ambient mode
+- Enables waypoint proxy support
+- Requires IstioCNI and ZTunnel to be deployed
+- No sidecar injection by default
+
+**Usage:**
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  values:
+    pilot:
+      trustedZtunnelNamespace: "ztunnel"
+```
+
+<Warning>
+Before using the ambient profile, ensure IstioCNI and ZTunnel are deployed with the ambient profile.
+</Warning>
+
+### demo
+
+The demo profile is designed for showcasing Istio features and quick exploration. It enables a wide range of features but is not suitable for production.
+
+**Characteristics:**
+- High resource usage
+- Enables additional features for demonstration purposes
+- Includes telemetry components
+- Not recommended for production
+
+**Usage:**
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: demo
+```
+
+### empty
+
+The empty profile provides minimal configuration, allowing full customization through Helm values.
+
+**Characteristics:**
+- Minimal default configuration
+- Requires extensive customization
+- For advanced users who want full control
+
+**Usage:**
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: empty
+  values:
+    # Extensive customization required
+```
+
+### openshift
+
+The openshift profile is optimized for OpenShift clusters, with security and networking configurations specific to OpenShift.
+
+**Characteristics:**
+- Configures Istio for OpenShift security constraints
+- Adjusts networking for OpenShift SDN
+- Requires IstioCNI to be deployed
+- Automatically applied on OpenShift clusters in addition to the default profile
+
+**Usage:**
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: openshift
+```
+
+<Note>
+On OpenShift, the openshift profile is automatically layered on top of the default profile.
+</Note>
+
+### openshift-ambient
+
+The openshift-ambient profile combines OpenShift-specific configurations with Ambient mesh support.
+
+**Characteristics:**
+- Optimized for OpenShift clusters
+- Enables Ambient mesh features
+- Requires IstioCNI and ZTunnel with appropriate profiles
+
+**Usage:**
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: openshift-ambient
+```
+
+### preview
+
+The preview profile enables experimental features that are under active development.
+
+**Characteristics:**
+- Enables preview/experimental features
+- May change between versions
+- Not recommended for production
+
+**Usage:**
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: preview
+```
+
+### remote
+
+The remote profile is used for configuring a remote cluster in a multi-cluster mesh setup.
+
+**Characteristics:**
+- Minimal local control plane components
+- Connects to a remote control plane
+- Used in multi-cluster deployments
+
+**Usage:**
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: remote
+  values:
+    global:
+      remotePilotAddress: <remote-istiod-address>
+```
+
+### stable
+
+The stable profile provides a stable, production-ready configuration with conservative defaults.
+
+**Characteristics:**
+- Conservative feature set
+- Proven stable in production
+- Recommended for risk-averse deployments
+
+**Usage:**
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: stable
+```
+
+## Profile Layering
+
+Profiles are applied in layers:
+
+1. **Base values** - From the Helm chart's default `values.yaml`
+2. **Default profile** - Always applied
+3. **Platform profile** - Automatically applied on specific platforms (e.g., `openshift` on OpenShift)
+4. **Specified profile** - The profile specified in `spec.profile`
+5. **Custom values** - Values specified in `spec.values`
+
+**Example with layering:**
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: demo  # Applied on top of 'default'
+  values:        # Applied on top of 'demo'
+    pilot:
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2048Mi
+```
+
+## Comparing Profiles
+
+| Profile | Use Case | Resource Usage | Features |
+|---------|----------|----------------|----------|
+| **default** | Production | Moderate | Core features |
+| **ambient** | Ambient mesh | Moderate | No sidecars, requires CNI & ZTunnel |
+| **demo** | Demonstrations | High | Many features enabled |
+| **empty** | Custom configs | Minimal | Requires full customization |
+| **openshift** | OpenShift | Moderate | OpenShift-optimized |
+| **openshift-ambient** | OpenShift + Ambient | Moderate | OpenShift + Ambient features |
+| **preview** | Testing new features | Variable | Experimental features |
+| **remote** | Multi-cluster | Low | Remote control plane |
+| **stable** | Conservative prod | Moderate | Stable feature set |
+
+## Profile Selection Guide
+
+### For Standard Kubernetes
+- **Production**: Use `default` or `stable`
+- **Ambient Mesh**: Use `ambient` (with IstioCNI and ZTunnel)
+- **Testing**: Use `demo` or `preview`
+
+### For OpenShift
+- **Production**: Use `openshift` (or no profile - it's auto-applied)
+- **Ambient Mesh**: Use `openshift-ambient` (with IstioCNI and ZTunnel)
+
+### For Multi-Cluster
+- **Primary Cluster**: Use `default`
+- **Remote Clusters**: Use `remote`
+
+## Custom Profile Values
+
+You can further customize any profile using the `spec.values` field:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: default
+  values:
+    # Override or extend profile defaults
+    pilot:
+      autoscaleEnabled: true
+      autoscaleMin: 2
+      autoscaleMax: 5
+    global:
+      proxy:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+```
+
+## CNI and ZTunnel Profiles
+
+IstioCNI and ZTunnel resources also support profiles:
+
+### IstioCNI with ambient profile
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient  # Enables ambient-specific CNI features
+  namespace: istio-cni
+```
+
+### Complete Ambient Stack
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+---
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+---
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  values:
+    pilot:
+      trustedZtunnelNamespace: "ztunnel"
+```
+
+## Related Resources
+
+- [Istio](/api/istio) - Uses profiles for control plane configuration
+- [IstioCNI](/api/istio-cni) - Uses profiles for CNI configuration
+- [ZTunnel](/api/ztunnel) - Used with ambient profile
+- [Helm Values](/api/helm-values) - Can override profile defaults
+- [Istio Installation Profiles](https://istio.io/latest/docs/setup/additional-setup/config-profiles/) - Official Istio profile documentation

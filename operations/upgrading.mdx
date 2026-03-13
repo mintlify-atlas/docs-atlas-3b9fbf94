@@ -1,0 +1,370 @@
+---
+title: Upgrading Istio
+description: Learn how to upgrade Istio versions using the Sail Operator with different update strategies
+---
+
+The Sail Operator provides two update strategies for upgrading your Istio control plane: **InPlace** and **RevisionBased**. This guide covers version management, upgrade procedures, and best practices.
+
+## Supported Versions
+
+The Sail Operator follows Istio's versioning and supports n-2 releases (the current version and two previous minor versions).
+
+### Checking Supported Versions
+
+Supported versions are defined in `pkg/istioversion/versions.yaml`. Current supported versions include:
+
+- **v1.29-latest** (alias for latest v1.29.x patch)
+- v1.29.1, v1.29.0
+- **v1.28-latest** (alias for latest v1.28.x patch)
+- v1.28.5, v1.28.4, v1.28.3, v1.28.2, v1.28.1, v1.28.0
+- **v1.27-latest** (alias for latest v1.27.x patch)
+- v1.27.8, v1.27.7, v1.27.6, v1.27.5, v1.27.4, v1.27.3, v1.27.2, v1.27.1, v1.27.0
+
+Versions marked as `eol: true` (e.g., v1.26.x and earlier) are End-of-Life and cannot be installed, but remain valid API inputs for backward compatibility.
+
+<Note>
+To install the latest patch version of a minor release, use the `-latest` alias (e.g., `v1.29-latest`). The operator will automatically use the most recent patch version.
+</Note>
+
+### Version Compatibility
+
+When running multiple Istio components:
+
+- Each component at version `1.x` is compatible with versions `1.x-1`, `1.x`, and `1.x+1`
+- This allows rolling upgrades where components temporarily run at different versions
+- **Best practice:** Keep all components at the same version
+
+## Update Strategies
+
+### InPlace Strategy (Default)
+
+With InPlace updates, the existing control plane is replaced in-place with the new version. Workloads immediately reconnect to the updated control plane.
+
+**Characteristics:**
+- Simplest upgrade path
+- Minimal resource overhead (no duplicate control planes)
+- Brief service disruption during control plane restart
+- **Recommended for:** Development environments, simple deployments
+
+**Configuration:**
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+```
+
+#### InPlace Upgrade Procedure
+
+1. **Verify current version:**
+
+```bash
+kubectl get istio -n istio-system
+```
+
+2. **Update to new version:**
+
+```bash
+kubectl patch istio default -n istio-system --type='merge' \
+  -p '{"spec":{"version":"v1.29.1"}}'
+```
+
+3. **Wait for control plane to be ready:**
+
+```bash
+kubectl wait --for=condition=Ready istio/default --timeout=5m
+```
+
+4. **Restart workload pods** to inject new sidecar version:
+
+```bash
+kubectl rollout restart deployment -n <your-namespace>
+```
+
+5. **Verify proxy versions:**
+
+```bash
+istioctl proxy-status
+```
+
+<Warning>
+**InPlace upgrades restart control plane pods**, which may cause brief disruptions. Configure istiod with high availability (HA) to minimize downtime. See [High Availability Configuration](/operations/configuration#high-availability).
+</Warning>
+
+### RevisionBased Strategy
+
+With RevisionBased updates, a new control plane instance is created alongside the existing one. Workloads are migrated gradually to the new version through namespace/pod label updates.
+
+**Characteristics:**
+- Canary-style upgrades
+- Zero-downtime for control plane
+- Gradual workload migration
+- Requires more cluster resources temporarily
+- **Recommended for:** Production environments, large deployments
+
+**Configuration:**
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+    updateWorkloads: false  # Manual migration (recommended)
+```
+
+#### RevisionBased Upgrade Procedure
+
+1. **Check current revision:**
+
+```bash
+kubectl get istiorevision
+# NAME              TYPE    READY   STATUS    IN USE   VERSION   AGE
+# default-v1-28-5   Local   True    Healthy   True     v1.28.5   10m
+```
+
+2. **Update Istio version** (creates new revision):
+
+```bash
+kubectl patch istio default -n istio-system --type='merge' \
+  -p '{"spec":{"version":"v1.29.1"}}'
+```
+
+3. **Verify both revisions are running:**
+
+```bash
+kubectl get istiorevision
+# NAME              TYPE    READY   STATUS    IN USE   VERSION   AGE
+# default-v1-28-5   Local   True    Healthy   True     v1.28.5   10m
+# default-v1-29-1   Local   True    Healthy   False    v1.29.1   30s
+
+kubectl get pods -n istio-system
+# Both istiod pods should be running
+```
+
+4. **Migrate workloads** by updating namespace labels:
+
+```bash
+# Update namespace to use new revision
+kubectl label namespace bookinfo istio.io/rev=default-v1-29-1 --overwrite
+
+# Restart pods to inject new sidecars
+kubectl rollout restart deployment -n bookinfo
+```
+
+5. **Verify migration:**
+
+```bash
+istioctl proxy-status
+# VERSION column should show new version for migrated workloads
+```
+
+6. **Repeat for all namespaces**, then wait for grace period
+
+After `inactiveRevisionDeletionGracePeriodSeconds` expires (default: 30s), the old revision is automatically deleted.
+
+#### Using IstioRevisionTag for Easier Migration
+
+`IstioRevisionTag` resources provide stable aliases for revisions, simplifying migrations:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: prod
+spec:
+  targetRef:
+    kind: Istio
+    name: default
+```
+
+With a revision tag:
+
+1. Label namespaces with `istio.io/rev=prod` (or `istio-injection=enabled` for tag named `default`)
+2. Update Istio version
+3. The tag automatically points to the new revision
+4. Simply restart workload pods - no relabeling needed
+
+```bash
+# After version update, just restart:
+kubectl rollout restart deployment -n bookinfo
+```
+
+## Ambient Mode Upgrades
+
+<Warning>
+**Ambient mode only supports InPlace strategy** due to ZTunnel's singleton architecture.
+</Warning>
+
+### Upgrade Order for Ambient Mode
+
+1. **Istio Control Plane** (Istio resource)
+2. **IstioCNI**
+3. **ZTunnel**
+4. **Waypoint Proxies** (if deployed)
+
+### Step-by-Step Ambient Upgrade
+
+1. **Update control plane:**
+
+```bash
+kubectl patch istio default -n istio-system --type='merge' \
+  -p '{"spec":{"version":"v1.29.1"}}'
+kubectl wait --for=condition=Ready istio/default --timeout=5m
+```
+
+2. **Update IstioCNI:**
+
+```bash
+kubectl patch istiocni default --type='merge' \
+  -p '{"spec":{"version":"v1.29.1"}}'
+kubectl wait --for=condition=Ready istiocnis/default --timeout=5m
+```
+
+3. **Update ZTunnel:**
+
+```bash
+kubectl patch ztunnel default --type='merge' \
+  -p '{"spec":{"version":"v1.29.1"}}'
+kubectl rollout status daemonset/ztunnel -n ztunnel
+kubectl wait --for=condition=Ready ztunnel/default --timeout=10m
+```
+
+4. **Verify ambient workloads:**
+
+```bash
+kubectl get pods -n <your-namespace>
+istioctl ztunnel-config workloads --namespace ztunnel | grep <your-namespace>
+```
+
+<Note>
+Ambient mode workloads **do not require pod restarts** after upgrades, as ZTunnel maintains xDS connections to istiod.
+</Note>
+
+### ZTunnel Upgrade Considerations
+
+ZTunnel operates at Layer 4 and cannot transfer TCP connection state during upgrades. Long-lived connections may be disrupted.
+
+**Options to minimize disruption:**
+
+1. **Increase termination grace period:**
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+  values:
+    ztunnel:
+      terminationGracePeriodSeconds: 300  # 5 minutes
+```
+
+2. **Use OnDelete update strategy for controlled rollout:**
+
+```yaml
+values:
+  ztunnel:
+    updateStrategy:
+      type: OnDelete
+```
+
+Then manually drain nodes before deleting ztunnel pods:
+
+```bash
+# For each node:
+kubectl drain <node> --ignore-daemonsets
+kubectl delete pod -n ztunnel <ztunnel-pod-on-node>
+kubectl wait --for=condition=Ready pod -n ztunnel -l app=ztunnel --timeout=5m
+kubectl uncordon <node>
+```
+
+See [Troubleshooting](/operations/troubleshooting#ztunnel-connection-issues) for more details.
+
+## Best Practices
+
+### Pre-Upgrade Checklist
+
+- [ ] Review release notes for breaking changes
+- [ ] Verify version compatibility with your platform (Kubernetes, OpenShift)
+- [ ] Backup Istio configuration resources
+- [ ] Test upgrade in non-production environment first
+- [ ] Configure HA for control plane (3+ replicas)
+- [ ] Plan maintenance window for InPlace upgrades
+
+### During Upgrade
+
+- Monitor control plane health: `kubectl get istio,istiorevision`
+- Watch for errors in operator logs: `kubectl logs -n sail-operator -l app.kubernetes.io/name=sail-operator`
+- Check istiod logs: `kubectl logs -n istio-system -l app=istiod`
+- Verify proxy connectivity: `istioctl proxy-status`
+
+### Post-Upgrade
+
+- Verify all workloads use new version: `istioctl proxy-status`
+- Test service connectivity within mesh
+- Monitor metrics for anomalies
+- Keep old revision temporarily for quick rollback (RevisionBased only)
+
+## Rollback Procedures
+
+### InPlace Rollback
+
+Simply patch back to previous version:
+
+```bash
+kubectl patch istio default -n istio-system --type='merge' \
+  -p '{"spec":{"version":"v1.28.5"}}'
+kubectl rollout restart deployment -n <namespace>
+```
+
+### RevisionBased Rollback
+
+Revert namespace labels to old revision:
+
+```bash
+kubectl label namespace bookinfo istio.io/rev=default-v1-28-5 --overwrite
+kubectl rollout restart deployment -n bookinfo
+```
+
+The old revision remains available during the grace period.
+
+## Operator Upgrades
+
+When upgrading the Sail Operator itself:
+
+1. **Using Helm:**
+
+```bash
+helm repo update
+helm upgrade sail-operator sailoperator/sailoperator -n sail-operator
+```
+
+2. **Using OLM (OpenShift):**
+
+Operator upgrades happen automatically based on approval strategy (Automatic or Manual) in the Subscription.
+
+<Warning>
+Operator upgrades may introduce new CRDs or API changes. Review the [release notes](https://github.com/istio-ecosystem/sail-operator/releases) before upgrading.
+</Warning>
+
+## Further Reading
+
+- [Configuration Guide](/operations/configuration)
+- [Troubleshooting Upgrades](/operations/troubleshooting#upgrade-issues)
+- [Observability During Upgrades](/operations/observability)
+- [Istio Upgrade Documentation](https://istio.io/latest/docs/setup/upgrade/)

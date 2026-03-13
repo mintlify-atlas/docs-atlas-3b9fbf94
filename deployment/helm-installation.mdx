@@ -1,0 +1,490 @@
+---
+title: Installing Sail Operator via Helm
+description: Install and configure the Sail Operator using Helm charts on Kubernetes or OpenShift
+---
+
+This guide walks through installing the Sail Operator using Helm, which manages the lifecycle of your Istio control plane deployments.
+
+## Prerequisites
+
+**Kubernetes:**
+- Kubernetes cluster version 1.27 or later
+- Admin-level access to the cluster
+
+**OpenShift:**
+- OpenShift Container Platform 4.14 or later
+- User with `cluster-admin` role
+
+**Tools:**
+- [Helm client](https://helm.sh/docs/intro/install/) version 3.6 or above
+- `kubectl` or `oc` CLI configured
+
+## Installation Steps
+
+### 1. Add the Helm Repository
+
+Add the Sail Operator Helm repository:
+
+```bash
+helm repo add sail-operator https://istio-ecosystem.github.io/sail-operator
+helm repo update
+```
+
+### 2. List Available Versions
+
+View available Sail Operator releases:
+
+```bash
+helm search repo sail-operator --versions
+```
+
+Example output:
+
+```
+NAME                      CHART VERSION   APP VERSION   DESCRIPTION
+sail-operator/sail-operator   1.26.3          1.26.3        Sail Operator for Istio
+sail-operator/sail-operator   1.26.2          1.26.2        Sail Operator for Istio
+sail-operator/sail-operator   1.26.1          1.26.1        Sail Operator for Istio
+```
+
+### 3. Create the Operator Namespace
+
+Create a namespace for the Sail Operator:
+
+```bash
+kubectl create namespace sail-operator
+```
+
+<Note>
+You can skip this step by using the `--create-namespace` flag in the next step.
+</Note>
+
+### 4. Install the Sail Operator
+
+Install the operator using Helm:
+
+```bash
+helm install sail-operator sail-operator/sail-operator \
+  --namespace sail-operator \
+  --version 1.26.3
+```
+
+With `--create-namespace` flag:
+
+```bash
+helm install sail-operator sail-operator/sail-operator \
+  --namespace sail-operator \
+  --create-namespace \
+  --version 1.26.3
+```
+
+### 5. Verify the Installation
+
+Check the Helm release:
+
+```bash
+helm ls -n sail-operator
+```
+
+Expected output:
+
+```
+NAME            NAMESPACE       REVISION  UPDATED                                 STATUS    CHART                 APP VERSION
+sail-operator   sail-operator   1         2025-08-20 16:14:12.210759174 +0300 IDT deployed  sail-operator-1.26.3  1.26.3
+```
+
+Get detailed status:
+
+```bash
+helm status sail-operator -n sail-operator
+```
+
+Verify the operator deployment:
+
+```bash
+kubectl get deployment -n sail-operator
+```
+
+Expected output:
+
+```
+NAME            READY   UP-TO-DATE   AVAILABLE   AGE
+sail-operator   1/1     1            1           2m
+```
+
+Check operator pods:
+
+```bash
+kubectl get pods -n sail-operator
+```
+
+Expected output:
+
+```
+NAME                             READY   STATUS    RESTARTS   AGE
+sail-operator-79c7d9ffb9-bwfdf   1/1     Running   0          2m
+```
+
+## Customizing the Installation
+
+### Using Custom Values
+
+Create a `values.yaml` file with custom configuration:
+
+```yaml values.yaml
+image: quay.io/sail-dev/sail-operator:1.26.3
+
+operator:
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1024Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+operatorLogLevel: info
+
+platform: kubernetes  # or "openshift"
+```
+
+Install with custom values:
+
+```bash
+helm install sail-operator sail-operator/sail-operator \
+  --namespace sail-operator \
+  --create-namespace \
+  --version 1.26.3 \
+  --values values.yaml
+```
+
+### Using --set Flags
+
+Override individual values:
+
+```bash
+helm install sail-operator sail-operator/sail-operator \
+  --namespace sail-operator \
+  --create-namespace \
+  --version 1.26.3 \
+  --set operatorLogLevel=debug \
+  --set operator.resources.requests.cpu=100m
+```
+
+## Common Configuration Options
+
+### Platform Selection
+
+Set the target platform (default: `kubernetes`):
+
+```yaml
+platform: openshift  # or "kubernetes"
+```
+
+Or via command line:
+
+```bash
+helm install sail-operator sail-operator/sail-operator \
+  --namespace sail-operator \
+  --set platform=openshift
+```
+
+### Operator Resources
+
+Configure CPU and memory limits:
+
+```yaml
+operator:
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2048Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+```
+
+### Log Level
+
+Set operator logging level:
+
+```yaml
+operatorLogLevel: debug  # info, debug, error
+```
+
+### Custom Image Registry
+
+Use a custom image registry:
+
+```yaml
+image: my-registry.com/sail-operator:1.26.3
+```
+
+### Image Pull Policy
+
+Configure image pull behavior:
+
+```yaml
+imagePullPolicy: IfNotPresent  # Always, Never, IfNotPresent
+```
+
+## Deploying Istio After Installation
+
+Once the operator is installed, deploy Istio by creating an `Istio` resource.
+
+### Sidecar Mode
+
+Create a basic Istio control plane:
+
+```bash
+kubectl create namespace istio-system
+
+kubectl apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+EOF
+```
+
+See [Sidecar Mode Deployment](/deployment/sidecar-mode) for details.
+
+### Ambient Mode
+
+Deploy IstioCNI, Istio, and ZTunnel for ambient mesh:
+
+```bash
+# Create namespaces
+kubectl create namespace istio-system
+kubectl create namespace istio-cni
+kubectl create namespace ztunnel
+
+# Label for discovery
+kubectl label namespace istio-system istio-discovery=enabled
+kubectl label namespace ztunnel istio-discovery=enabled
+
+# Deploy Istio
+kubectl apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      trustedZtunnelNamespace: ztunnel
+    meshConfig:
+      discoverySelectors:
+        - matchLabels:
+            istio-discovery: enabled
+EOF
+
+# Deploy IstioCNI
+kubectl apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+EOF
+
+# Deploy ZTunnel
+kubectl apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+EOF
+```
+
+See [Ambient Mode Deployment](/deployment/ambient-mode) for details.
+
+## Upgrading the Operator
+
+### Check for Updates
+
+Refresh the repository and check for new versions:
+
+```bash
+helm repo update
+helm search repo sail-operator --versions
+```
+
+### Upgrade to Latest Version
+
+Upgrade the operator:
+
+```bash
+helm upgrade sail-operator sail-operator/sail-operator \
+  --namespace sail-operator \
+  --version 1.27.0
+```
+
+### Upgrade with Custom Values
+
+Preserve custom configuration during upgrade:
+
+```bash
+helm upgrade sail-operator sail-operator/sail-operator \
+  --namespace sail-operator \
+  --version 1.27.0 \
+  --values values.yaml
+```
+
+## Viewing Configuration
+
+### Show Current Values
+
+View the values used for the current installation:
+
+```bash
+helm get values sail-operator -n sail-operator
+```
+
+### Show All Values
+
+View all values (including defaults):
+
+```bash
+helm get values sail-operator -n sail-operator --all
+```
+
+### View Chart Defaults
+
+Inspect default values for a chart version:
+
+```bash
+helm show values sail-operator/sail-operator --version 1.26.3
+```
+
+## Uninstalling
+
+### Delete Istio Resources First
+
+Before uninstalling the operator, delete all Istio-related resources:
+
+```bash
+# Delete Istio control plane
+kubectl delete istio default -n istio-system
+
+# Delete IstioCNI (if using ambient or OpenShift)
+kubectl delete istiocni default -n istio-cni
+
+# Delete ZTunnel (if using ambient)
+kubectl delete ztunnel default -n ztunnel
+```
+
+### Uninstall the Operator
+
+Remove the Helm release:
+
+```bash
+helm uninstall sail-operator --namespace sail-operator
+```
+
+### Delete Namespaces
+
+Clean up namespaces:
+
+```bash
+kubectl delete namespace sail-operator
+kubectl delete namespace istio-system
+kubectl delete namespace istio-cni
+kubectl delete namespace ztunnel
+```
+
+### Delete CRDs (Optional)
+
+Helm does not automatically delete CRDs. If you want to remove them:
+
+```bash
+kubectl get crds -o name | grep istio.io | xargs kubectl delete
+```
+
+<Warning>
+Deleting CRDs will permanently remove all associated custom resources. Only do this if you're certain you want to remove all Istio configurations.
+</Warning>
+
+## Troubleshooting
+
+### Operator Not Starting
+
+Check operator logs:
+
+```bash
+kubectl logs -n sail-operator -l app.kubernetes.io/name=sail-operator
+```
+
+Describe the pod:
+
+```bash
+kubectl describe pod -n sail-operator -l app.kubernetes.io/name=sail-operator
+```
+
+### Image Pull Errors
+
+Verify the image path and credentials:
+
+```bash
+kubectl get pods -n sail-operator
+kubectl describe pod <pod-name> -n sail-operator
+```
+
+Create an image pull secret if using a private registry:
+
+```bash
+kubectl create secret docker-registry regcred \
+  --docker-server=<registry> \
+  --docker-username=<username> \
+  --docker-password=<password> \
+  --namespace sail-operator
+```
+
+### Helm Release Issues
+
+List all releases:
+
+```bash
+helm list --all-namespaces
+```
+
+View release history:
+
+```bash
+helm history sail-operator -n sail-operator
+```
+
+Rollback to previous version:
+
+```bash
+helm rollback sail-operator <revision> -n sail-operator
+```
+
+## Next Steps
+
+- [Deploy Istio in sidecar mode](/deployment/sidecar-mode)
+- [Deploy Istio in ambient mode](/deployment/ambient-mode)
+- [OpenShift-specific deployment](/deployment/openshift)
+- [Configure observability](/operations/observability)
+
+## Related Resources
+
+- [Sail Operator GitHub Repository](https://github.com/istio-ecosystem/sail-operator)
+- [Helm Chart Values Reference](https://github.com/istio-ecosystem/sail-operator/blob/main/chart/values.yaml)
+- [Istio Resource API](/api/istio)

@@ -1,0 +1,399 @@
+---
+title: Multi-Cluster Deployment
+description: Deploy Istio across multiple Kubernetes clusters with Sail Operator
+icon: network-wired
+---
+
+The Sail Operator supports managing Istio across multiple Kubernetes clusters, enabling you to build resilient, geographically distributed service meshes. This guide covers the various multi-cluster deployment patterns.
+
+## Overview
+
+Multi-cluster deployments allow you to:
+
+- Distribute services across multiple clusters for high availability
+- Enable cross-cluster service discovery and load balancing
+- Support geographical distribution with locality-aware routing
+- Implement disaster recovery and failover strategies
+
+Before proceeding, familiarize yourself with [Istio's deployment models](https://istio.io/latest/docs/ops/deployment/deployment-models/).
+
+## Deployment Models
+
+The Sail Operator supports all standard Istio multi-cluster deployment models:
+
+- **Multi-Primary**: All clusters run their own control plane and can manage workloads
+- **Primary-Remote**: One cluster runs the control plane, others run only workloads
+- **Single-Network**: Clusters share the same network with pod-to-pod connectivity
+- **Multi-Network**: Clusters are on separate networks, requiring gateways for cross-cluster traffic
+
+## Prerequisites
+
+<Steps>
+  <Step title="Install required tools">
+    Install `istioctl` following the [installation guide](https://istio.io/latest/docs/setup/install/istioctl/).
+  </Step>
+  
+  <Step title="Prepare clusters">
+    You need at least two Kubernetes clusters with different networking requirements:
+    
+    - **Single-network**: Requires a multi-cluster networking solution (like Submariner) for direct pod-to-pod communication
+    - **Multi-network**: Requires external load balancer support
+  </Step>
+  
+  <Step title="Configure kubeconfig">
+    Ensure your kubeconfig file has contexts for each cluster:
+    
+    ```bash
+    kubectl config get-contexts
+    ```
+  </Step>
+  
+  <Step title="Install Sail Operator">
+    Install the Sail Operator on **every** cluster that will participate in the mesh.
+  </Step>
+</Steps>
+
+## Common Setup
+
+These steps are common to every multi-cluster deployment and should be completed **after** meeting the prerequisites but **before** configuring a specific deployment model.
+
+### Set Environment Variables
+
+```bash
+export CTX_CLUSTER1=<cluster1-context>
+export CTX_CLUSTER2=<cluster2-context>
+export ISTIO_VERSION=1.29.1
+```
+
+### Create System Namespaces
+
+```bash
+kubectl create namespace istio-system --context "${CTX_CLUSTER1}"
+kubectl create namespace istio-system --context "${CTX_CLUSTER2}"
+```
+
+### Configure Shared Trust
+
+For multi-cluster meshes, you must establish trust between clusters using a shared root certificate.
+
+<Accordion title="Create shared root certificate">
+
+```bash
+# Generate root CA
+openssl genrsa -out root-key.pem 4096
+
+cat <<EOF > root-ca.conf
+[ req ]
+encrypt_key = no
+prompt = no
+utf8 = yes
+default_md = sha256
+default_bits = 4096
+req_extensions = req_ext
+x509_extensions = req_ext
+distinguished_name = req_dn
+[ req_ext ]
+subjectKeyIdentifier = hash
+basicConstraints = critical, CA:true
+keyUsage = critical, digitalSignature, nonRepudiation, keyEncipherment, keyCertSign
+[ req_dn ]
+O = Istio
+CN = Root CA
+EOF
+
+openssl req -sha256 -new -key root-key.pem \
+  -config root-ca.conf \
+  -out root-cert.csr
+
+openssl x509 -req -sha256 -days 3650 \
+  -signkey root-key.pem \
+  -extensions req_ext -extfile root-ca.conf \
+  -in root-cert.csr \
+  -out root-cert.pem
+```
+
+</Accordion>
+
+<Accordion title="Create intermediate certificates for each cluster">
+
+```bash
+for cluster in east west; do
+  mkdir $cluster
+
+  openssl genrsa -out ${cluster}/ca-key.pem 4096
+  
+  cat <<EOF > ${cluster}/intermediate.conf
+[ req ]
+encrypt_key = no
+prompt = no
+utf8 = yes
+default_md = sha256
+default_bits = 4096
+req_extensions = req_ext
+x509_extensions = req_ext
+distinguished_name = req_dn
+[ req_ext ]
+subjectKeyIdentifier = hash
+basicConstraints = critical, CA:true, pathlen:0
+keyUsage = critical, digitalSignature, nonRepudiation, keyEncipherment, keyCertSign
+subjectAltName=@san
+[ san ]
+DNS.1 = istiod.istio-system.svc
+[ req_dn ]
+O = Istio
+CN = Intermediate CA
+L = $cluster
+EOF
+
+  openssl req -new -config ${cluster}/intermediate.conf \
+    -key ${cluster}/ca-key.pem \
+    -out ${cluster}/cluster-ca.csr
+
+  openssl x509 -req -sha256 -days 3650 \
+    -CA root-cert.pem \
+    -CAkey root-key.pem -CAcreateserial \
+    -extensions req_ext -extfile ${cluster}/intermediate.conf \
+    -in ${cluster}/cluster-ca.csr \
+    -out ${cluster}/ca-cert.pem
+
+  cat ${cluster}/ca-cert.pem root-cert.pem > ${cluster}/cert-chain.pem
+  cp root-cert.pem ${cluster}
+done
+```
+
+</Accordion>
+
+### Push Certificates to Clusters
+
+```bash
+# Label namespaces with network identifiers
+kubectl label namespace istio-system topology.istio.io/network=network1 \
+  --context "${CTX_CLUSTER1}"
+kubectl label namespace istio-system topology.istio.io/network=network2 \
+  --context "${CTX_CLUSTER2}"
+
+# Create secrets
+kubectl create secret generic cacerts -n istio-system \
+  --context "${CTX_CLUSTER1}" \
+  --from-file=east/ca-cert.pem \
+  --from-file=east/ca-key.pem \
+  --from-file=east/root-cert.pem \
+  --from-file=east/cert-chain.pem
+
+kubectl create secret generic cacerts -n istio-system \
+  --context "${CTX_CLUSTER2}" \
+  --from-file=west/ca-cert.pem \
+  --from-file=west/ca-key.pem \
+  --from-file=west/root-cert.pem \
+  --from-file=west/cert-chain.pem
+```
+
+## Multi-Primary Configuration
+
+In a multi-primary configuration, each cluster runs its own control plane (istiod) and can independently manage workloads.
+
+### Single-Network
+
+Use when clusters share the same network and pods can communicate directly.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    global:
+      meshID: mesh1
+      multiCluster:
+        clusterName: cluster1  # Change for each cluster
+      network: network1        # Same network for all clusters
+```
+
+Apply this to both clusters (changing `clusterName` appropriately), then create remote secrets:
+
+```bash
+# Allow cluster1 to access cluster2 API
+istioctl create-remote-secret \
+  --context="${CTX_CLUSTER1}" \
+  --name=cluster1 | \
+  kubectl apply -f - --context="${CTX_CLUSTER2}"
+
+# Allow cluster2 to access cluster1 API
+istioctl create-remote-secret \
+  --context="${CTX_CLUSTER2}" \
+  --name=cluster2 | \
+  kubectl apply -f - --context="${CTX_CLUSTER1}"
+```
+
+### Multi-Network
+
+Use when clusters are on separate networks. This requires east-west gateways for cross-cluster communication.
+
+<Steps>
+  <Step title="Deploy Istio control planes">
+    ```yaml
+    apiVersion: sailoperator.io/v1
+    kind: Istio
+    metadata:
+      name: default
+    spec:
+      version: v1.29.1
+      namespace: istio-system
+      values:
+        global:
+          meshID: mesh1
+          multiCluster:
+            clusterName: cluster1  # cluster1 or cluster2
+          network: network1        # network1 or network2
+    ```
+  </Step>
+  
+  <Step title="Deploy east-west gateways">
+    Deploy gateways to enable cross-network traffic:
+    
+    ```bash
+    kubectl apply --context "${CTX_CLUSTER1}" \
+      -f https://raw.githubusercontent.com/istio-ecosystem/sail-operator/main/docs/deployment-models/resources/east-west-gateway-net1.yaml
+    
+    kubectl apply --context "${CTX_CLUSTER2}" \
+      -f https://raw.githubusercontent.com/istio-ecosystem/sail-operator/main/docs/deployment-models/resources/east-west-gateway-net2.yaml
+    ```
+  </Step>
+  
+  <Step title="Expose services">
+    ```bash
+    kubectl apply -n istio-system --context "${CTX_CLUSTER1}" \
+      -f https://raw.githubusercontent.com/istio-ecosystem/sail-operator/main/docs/deployment-models/resources/expose-services.yaml
+    
+    kubectl apply -n istio-system --context "${CTX_CLUSTER2}" \
+      -f https://raw.githubusercontent.com/istio-ecosystem/sail-operator/main/docs/deployment-models/resources/expose-services.yaml
+    ```
+  </Step>
+  
+  <Step title="Create remote secrets">
+    For kind clusters, get the API server addresses first:
+    
+    ```bash
+    CLUSTER1_IP=$(kubectl get nodes -l node-role.kubernetes.io/control-plane \
+      --context "${CTX_CLUSTER1}" \
+      -o jsonpath='{.items[0].status.addresses[?(@.type == "InternalIP")].address}')
+    
+    CLUSTER2_IP=$(kubectl get nodes -l node-role.kubernetes.io/control-plane \
+      --context "${CTX_CLUSTER2}" \
+      -o jsonpath='{.items[0].status.addresses[?(@.type == "InternalIP")].address}')
+    
+    istioctl create-remote-secret \
+      --context="${CTX_CLUSTER1}" \
+      --name=cluster1 \
+      --server="https://${CLUSTER1_IP}:6443" | \
+      kubectl apply -f - --context="${CTX_CLUSTER2}"
+    
+    istioctl create-remote-secret \
+      --context="${CTX_CLUSTER2}" \
+      --name=cluster2 \
+      --server="https://${CLUSTER2_IP}:6443" | \
+      kubectl apply -f - --context="${CTX_CLUSTER1}"
+    ```
+  </Step>
+</Steps>
+
+## Verification
+
+Deploy test applications to verify the multi-cluster setup:
+
+```bash
+# Create namespaces
+kubectl create namespace sample --context "${CTX_CLUSTER1}"
+kubectl label namespace sample istio-injection=enabled --context "${CTX_CLUSTER1}"
+
+kubectl create namespace sample --context "${CTX_CLUSTER2}"
+kubectl label namespace sample istio-injection=enabled --context "${CTX_CLUSTER2}"
+
+# Deploy v1 to cluster1
+kubectl apply --context="${CTX_CLUSTER1}" -n sample \
+  -f https://raw.githubusercontent.com/istio/istio/1.29.1/samples/helloworld/helloworld.yaml \
+  -l service=helloworld
+  
+kubectl apply --context="${CTX_CLUSTER1}" -n sample \
+  -f https://raw.githubusercontent.com/istio/istio/1.29.1/samples/helloworld/helloworld.yaml \
+  -l version=v1
+
+# Deploy v2 to cluster2
+kubectl apply --context="${CTX_CLUSTER2}" -n sample \
+  -f https://raw.githubusercontent.com/istio/istio/1.29.1/samples/helloworld/helloworld.yaml \
+  -l service=helloworld
+  
+kubectl apply --context="${CTX_CLUSTER2}" -n sample \
+  -f https://raw.githubusercontent.com/istio/istio/1.29.1/samples/helloworld/helloworld.yaml \
+  -l version=v2
+
+# Deploy sleep app to both clusters
+kubectl apply --context="${CTX_CLUSTER1}" -n sample \
+  -f https://raw.githubusercontent.com/istio/istio/1.29.1/samples/sleep/sleep.yaml
+  
+kubectl apply --context="${CTX_CLUSTER2}" -n sample \
+  -f https://raw.githubusercontent.com/istio/istio/1.29.1/samples/sleep/sleep.yaml
+```
+
+Test cross-cluster connectivity:
+
+```bash
+# From cluster1, you should see responses from both v1 and v2
+for i in {1..10}; do
+  kubectl exec --context="${CTX_CLUSTER1}" -n sample -c sleep \
+    $(kubectl get pod --context="${CTX_CLUSTER1}" -n sample -l app=sleep -o jsonpath='{.items[0].metadata.name}') \
+    -- curl -sS helloworld.sample:5000/hello
+done
+```
+
+<Check>
+You should see responses from both `v1` (running in cluster1) and `v2` (running in cluster2), confirming cross-cluster load balancing is working.
+</Check>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Services not discovered across clusters">
+    - Verify remote secrets are created: `kubectl get secrets -n istio-system | grep istio-remote-secret`
+    - Check istiod logs for connection errors: `kubectl logs -n istio-system deployment/istiod`
+    - Ensure network labels match: `kubectl get ns istio-system --show-labels`
+  </Accordion>
+  
+  <Accordion title="East-west gateway not reachable">
+    - Verify gateway has external IP: `kubectl get svc istio-eastwestgateway -n istio-system`
+    - Check gateway pod status: `kubectl get pods -n istio-system -l istio=eastwestgateway`
+    - Test connectivity: `curl -v telnet://<gateway-ip>:15443`
+  </Accordion>
+  
+  <Accordion title="Certificate trust issues">
+    - Verify cacerts secret exists in both clusters: `kubectl get secret cacerts -n istio-system`
+    - Check certificate chain: `kubectl get secret cacerts -n istio-system -o jsonpath='{.data.cert-chain\.pem}' | base64 -d | openssl certs -text`
+    - Ensure intermediate certificates are signed by the same root CA
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Primary-Remote Setup" icon="diagram-project" href="/advanced/multicluster">
+    Configure a primary-remote topology for centralized control
+  </Card>
+  <Card title="External Control Plane" icon="tower-broadcast" href="/advanced/external-control-plane">
+    Deploy control plane outside the mesh
+  </Card>
+  <Card title="Custom Certificates" icon="certificate" href="/advanced/plugin-ca">
+    Integrate your own certificate authority
+  </Card>
+  <Card title="Ambient Mode" icon="layer-group" href="/deployment/ambient-mode">
+    Multi-cluster with ambient mesh
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [Istio Multi-Cluster Documentation](https://istio.io/latest/docs/setup/install/multicluster/)
+- [Deployment Models Overview](https://istio.io/latest/docs/ops/deployment/deployment-models/)
+- [Multi-Cluster Test Scripts](https://github.com/istio-ecosystem/sail-operator/tree/main/tests/e2e/multicluster)

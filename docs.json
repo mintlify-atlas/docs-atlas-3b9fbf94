@@ -1,122 +1,109 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Sail Operator",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#446cb4",
+    "light": "#9cb4d4",
+    "dark": "#d7dfed"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "https://media.brand.dev/aa853861-8042-450f-a397-0493e6e92ae2.jpg",
+  "logo": {
+    "light": "https://media.brand.dev/4d209a3e-fb2b-4da3-999c-03dce876d666.svg",
+    "dark": "https://media.brand.dev/4d209a3e-fb2b-4da3-999c-03dce876d666.svg"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/istio-ecosystem/sail-operator"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/istio-ecosystem/sail-operator"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/overview",
+              "concepts/custom-resources",
+              "concepts/revisions",
+              "concepts/update-strategies"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Deployment",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "deployment/sidecar-mode",
+              "deployment/ambient-mode",
+              "deployment/helm-installation",
+              "deployment/openshift"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Operations",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "operations/upgrading",
+              "operations/configuration",
+              "operations/observability",
+              "operations/troubleshooting"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/multicluster",
+              "advanced/multiple-control-planes",
+              "advanced/plugin-ca",
+              "advanced/external-control-plane",
+              "advanced/dual-stack"
+            ]
+          },
+          {
+            "group": "Migration",
+            "pages": [
+              "migration/from-istioctl",
+              "migration/sidecar-to-ambient"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Custom Resources",
             "pages": [
-              "api-reference/introduction"
+              "api/istio",
+              "api/istio-revision",
+              "api/istio-revision-tag",
+              "api/istio-cni",
+              "api/ztunnel"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Configuration",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/helm-values",
+              "api/profiles"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

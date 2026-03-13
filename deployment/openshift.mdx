@@ -1,0 +1,518 @@
+---
+title: OpenShift Deployment
+description: Deploy Sail Operator and Istio on OpenShift Container Platform with platform-specific configurations
+---
+
+This guide covers deploying the Sail Operator and Istio on OpenShift Container Platform, including platform-specific requirements and configurations.
+
+## Prerequisites
+
+- OpenShift Container Platform 4.14 or later
+- User with `cluster-admin` role
+- `oc` CLI configured and logged in
+
+## Installation Methods
+
+You can install the Sail Operator on OpenShift using either the web console or CLI.
+
+## Installing via OpenShift Web Console
+
+### 1. Navigate to OperatorHub
+
+1. Log into the OpenShift web console
+2. Click **Operators** → **OperatorHub** in the left navigation
+3. Search for "sail" in the search bar
+
+### 2. Install the Operator
+
+1. Click on the **Sail Operator** tile
+2. When the community operator warning appears, click **Continue**
+3. Click **Install**
+4. Use the default installation settings:
+   - **Update channel**: Select your desired channel (e.g., `0.1-nightly`)
+   - **Installation mode**: All namespaces on the cluster
+   - **Installed Namespace**: `openshift-operators`
+   - **Update approval**: Automatic
+5. Click **Install**
+
+### 3. Verify Installation
+
+1. Navigate to **Operators** → **Installed Operators**
+2. Ensure the Sail Operator shows `Succeeded` in the **Status** column
+
+## Installing via CLI
+
+### 1. Create the Subscription
+
+Create the `openshift-operators` namespace (if needed) and subscription:
+
+```bash
+# Create namespace
+oc create namespace openshift-operators
+
+# Create subscription
+oc apply -f - <<EOF
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: sailoperator
+  namespace: openshift-operators
+spec:
+  channel: "0.1-nightly"
+  installPlanApproval: Automatic
+  name: sailoperator
+  source: community-operators
+  sourceNamespace: openshift-marketplace
+EOF
+```
+
+### 2. Verify Installation
+
+Check the ClusterServiceVersion (CSV) status:
+
+```bash
+oc get csv -n openshift-operators
+```
+
+Expected output:
+
+```
+NAME                                     DISPLAY         VERSION                    REPLACES                                 PHASE
+sailoperator.v0.1.0-nightly-2024-06-25   Sail Operator   0.1.0-nightly-2024-06-25   sailoperator.v0.1.0-nightly-2024-06-21   Succeeded
+```
+
+Verify pods are running:
+
+```bash
+oc get pods -n openshift-operators | grep sail
+```
+
+## Deploying Istio in Sidecar Mode
+
+### Basic Deployment
+
+On OpenShift, IstioCNI is required even for sidecar mode:
+
+```bash
+# Create namespaces
+oc create namespace istio-system
+oc create namespace istio-cni
+
+# Deploy IstioCNI
+oc apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+EOF
+
+# Deploy Istio
+oc apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+EOF
+```
+
+### Using OpenShift Profile
+
+For OpenShift-optimized settings, use the `openshift` profile:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: openshift
+  updateStrategy:
+    type: InPlace
+```
+
+The `openshift` profile automatically configures:
+- Security context constraints (SCC)
+- OpenShift-specific networking settings
+- Compatible resource limits
+
+## Deploying Istio in Ambient Mode
+
+Ambient mode requires IstioCNI and ZTunnel on OpenShift:
+
+```bash
+# Create namespaces
+oc create namespace istio-system
+oc create namespace istio-cni
+oc create namespace ztunnel
+
+# Label for discovery
+oc label namespace istio-system istio-discovery=enabled
+oc label namespace ztunnel istio-discovery=enabled
+
+# Deploy Istio
+oc apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      trustedZtunnelNamespace: ztunnel
+    meshConfig:
+      discoverySelectors:
+        - matchLabels:
+            istio-discovery: enabled
+EOF
+
+# Deploy IstioCNI
+oc apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+EOF
+
+# Deploy ZTunnel
+oc apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+EOF
+```
+
+<Note>
+On OpenShift clusters, ambient deployments require local gateway mode. See the [OpenShift Service Mesh documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_service_mesh/3.1/html/installing/ossm-istio-ambient-mode) for details.
+</Note>
+
+## OpenShift-Specific Features
+
+### Using Routes for Ingress
+
+OpenShift Routes provide an alternative to Kubernetes Ingress:
+
+```yaml
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: bookinfo
+  namespace: bookinfo
+spec:
+  host: bookinfo.apps.my-cluster.example.com
+  to:
+    kind: Service
+    name: istio-ingressgateway
+  port:
+    targetPort: http2
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+```
+
+Apply the route:
+
+```bash
+oc apply -f route.yaml
+```
+
+Get the route URL:
+
+```bash
+oc get route bookinfo -n bookinfo -o jsonpath='{.spec.host}'
+```
+
+### OpenShift Monitoring Integration
+
+Integrate Istio metrics with OpenShift's user-workload monitoring:
+
+#### Enable User Workload Monitoring
+
+Ensure user workload monitoring is enabled:
+
+```bash
+oc get configmap cluster-monitoring-config -n openshift-monitoring -o yaml
+```
+
+#### Create ServiceMonitor
+
+Create ServiceMonitor resources for Istio components:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: istiod-monitor
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      app: istiod
+  endpoints:
+  - port: http-monitoring
+    interval: 30s
+```
+
+For ambient mode, create a PodMonitor for ZTunnel:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: ztunnel-monitor
+  namespace: ztunnel
+spec:
+  selector:
+    matchLabels:
+      app: ztunnel
+  podMetricsEndpoints:
+  - port: metrics
+    interval: 30s
+```
+
+Apply the monitors:
+
+```bash
+oc apply -f servicemonitor.yaml
+oc apply -f podmonitor.yaml
+```
+
+#### View Metrics
+
+Access metrics in the OpenShift console:
+
+1. Navigate to **Observe** → **Metrics**
+2. Try queries like `istio_requests_total` or `ztunnel_connection_count`
+
+### OpenShift Distributed Tracing
+
+Configure Istio with OpenShift distributed tracing (Tempo):
+
+#### Prerequisites
+
+- Tempo stack installed
+- OpenTelemetry collector configured in `istio-system` namespace
+
+#### Configure Istio
+
+Add tracing configuration to the Istio resource:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: openshift
+  values:
+    meshConfig:
+      enableTracing: true
+      extensionProviders:
+      - name: otel-tracing
+        opentelemetry:
+          port: 4317
+          service: otel-collector.istio-system.svc.cluster.local
+```
+
+#### Create Telemetry Resource
+
+```yaml
+apiVersion: telemetry.istio.io/v1
+kind: Telemetry
+metadata:
+  name: otel-tracing
+  namespace: istio-system
+spec:
+  tracing:
+  - providers:
+    - name: otel-tracing
+    randomSamplingPercentage: 100.0
+```
+
+Apply:
+
+```bash
+oc apply -f telemetry.yaml
+```
+
+#### View Traces
+
+Access the Tempo UI:
+
+```bash
+oc get route -n tempo tempo-sample-query-frontend-tempo -o jsonpath='{.spec.host}'
+```
+
+## Security Context Constraints
+
+OpenShift uses Security Context Constraints (SCCs) instead of Pod Security Policies. The Sail Operator automatically handles SCC configuration, but you may need to adjust for specific requirements.
+
+### View Current SCCs
+
+```bash
+oc get scc
+```
+
+### Grant SCC to Service Account
+
+If needed, grant specific SCCs:
+
+```bash
+oc adm policy add-scc-to-user privileged -z istio-cni -n istio-cni
+```
+
+## Project Management
+
+OpenShift uses Projects instead of namespaces (they're equivalent):
+
+```bash
+# Create a project
+oc new-project bookinfo
+
+# Label for Istio injection
+oc label namespace bookinfo istio-injection=enabled
+
+# Or for ambient mode
+oc label namespace bookinfo istio.io/dataplane-mode=ambient
+```
+
+## Uninstalling
+
+### Delete Istio Resources
+
+Using the web console:
+
+1. Navigate to **Operators** → **Installed Operators**
+2. Click on **Sail Operator**
+3. Select the **Istio** tab and delete all instances
+4. Select the **IstioCNI** tab and delete all instances
+5. Select the **ZTunnel** tab and delete all instances (if using ambient)
+
+Using CLI:
+
+```bash
+oc delete istio default -n istio-system
+oc delete istiocni default -n istio-cni
+oc delete ztunnel default -n ztunnel  # if using ambient
+```
+
+### Uninstall the Operator
+
+Using the web console:
+
+1. Navigate to **Operators** → **Installed Operators**
+2. Find the Sail Operator
+3. Click the options menu (⋮) and select **Uninstall Operator**
+4. Confirm the action
+
+Using CLI:
+
+```bash
+oc delete subscription sailoperator -n openshift-operators
+oc delete csv -n openshift-operators -l operators.coreos.com/sailoperator.openshift-operators
+```
+
+### Delete Projects
+
+Using the web console:
+
+1. Navigate to **Home** → **Projects**
+2. Find the project (istio-system, istio-cni, ztunnel)
+3. Click the options menu (⋮) and select **Delete Project**
+4. Enter the project name to confirm
+
+Using CLI:
+
+```bash
+oc delete project istio-system
+oc delete project istio-cni
+oc delete project ztunnel
+```
+
+### Delete CRDs (Optional)
+
+```bash
+oc get crds -o name | grep istio.io | xargs oc delete
+```
+
+<Warning>
+Deleting CRDs permanently removes all Istio configurations. Only do this if you're completely removing Istio.
+</Warning>
+
+## Troubleshooting
+
+### Check Operator Status
+
+```bash
+oc get csv -n openshift-operators
+oc get pods -n openshift-operators | grep sail
+```
+
+### View Operator Logs
+
+```bash
+oc logs -n openshift-operators -l app.kubernetes.io/name=sail-operator
+```
+
+### Check Istio Status
+
+```bash
+oc get istio -n istio-system
+oc get pods -n istio-system
+```
+
+### SCC Issues
+
+If pods fail due to SCC violations:
+
+```bash
+oc get events -n istio-system --sort-by='.lastTimestamp'
+oc describe pod <pod-name> -n istio-system
+```
+
+### Network Policy Issues
+
+OpenShift has default network policies that may need adjustment:
+
+```bash
+oc get networkpolicy -n istio-system
+```
+
+## Next Steps
+
+- [Configure sidecar injection](/deployment/sidecar-mode)
+- [Set up ambient mode](/deployment/ambient-mode)
+- [Integrate with OpenShift monitoring](/operations/observability)
+- [Configure distributed tracing](https://istio.io/latest/docs/tasks/observability/distributed-tracing/)
+- [Deploy gateways](https://istio.io/latest/docs/setup/additional-setup/gateway/)
+
+## Related Resources
+
+- [OpenShift Service Mesh Documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_service_mesh)
+- [OpenShift Operator Lifecycle Manager](https://docs.openshift.com/container-platform/latest/operators/understanding/olm/olm-understanding-olm.html)
+- [Sail Operator API Reference](/api/istio)
+- [Istio on OpenShift](https://istio.io/latest/docs/setup/platform-setup/openshift/)

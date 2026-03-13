@@ -1,0 +1,467 @@
+---
+title: Helm Values
+description: Comprehensive reference for Istio Helm values configuration
+---
+
+The `values` field in Istio, IstioRevision, IstioCNI, and ZTunnel resources accepts Helm chart values to customize the installation. This page documents the most commonly used values.
+
+<Info>
+For the complete and most up-to-date list of all available values, refer to the [Istio Helm chart documentation](https://istio.io/latest/docs/reference/config/istio.operator.v1alpha1/) or examine the `values_types.gen.go` file in the Sail Operator source code.
+</Info>
+
+## Global Configuration
+
+Global configuration applies to all Istio components.
+
+### Global Values
+
+<ParamField path="global.hub" type="string">
+  Specifies the Docker hub for Istio images.
+  
+  **Example:** `docker.io/istio`
+</ParamField>
+
+<ParamField path="global.tag" type="string">
+  Specifies the tag for the Istio Docker images.
+  
+  **Example:** `1.29.1`
+</ParamField>
+
+<ParamField path="global.variant" type="string">
+  The variant of the Istio container images to use. Options are `debug` or `distroless`.
+</ParamField>
+
+<ParamField path="global.imagePullPolicy" type="string">
+  Image pull policy. One of: `Always`, `Never`, `IfNotPresent`.
+  
+  **Default:** `Always` if `:latest` tag is specified, or `IfNotPresent` otherwise.
+</ParamField>
+
+<ParamField path="global.imagePullSecrets" type="array">
+  List of image pull secrets in the same namespace for pulling images in pods.
+  
+  **Example:**
+  ```yaml
+  global:
+    imagePullSecrets:
+      - name: my-registry-secret
+  ```
+</ParamField>
+
+<ParamField path="global.istioNamespace" type="string">
+  Specifies the default namespace for the Istio control plane components.
+  
+  <Warning>Must match `spec.namespace` in the Istio resource.</Warning>
+</ParamField>
+
+<ParamField path="global.meshID" type="string">
+  The Mesh Identifier. Must be unique within the scope where meshes will interact with each other.
+</ParamField>
+
+<ParamField path="global.network" type="string">
+  Network defines the network this cluster belongs to. This name corresponds to the networks in the map of mesh networks.
+</ParamField>
+
+<ParamField path="global.multiCluster" type="object">
+  Configuration for Istio mesh across multiple clusters.
+  
+  <Expandable title="properties">
+    <ParamField path="enabled" type="boolean">
+      Enables connection between two kubernetes clusters via their respective ingress gateway services.
+    </ParamField>
+    
+    <ParamField path="clusterName" type="string">
+      The name of the cluster this installation will run in.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="global.proxy" type="object">
+  Specifies how proxies are configured within Istio. See [Proxy Configuration](#proxy-configuration) below.
+</ParamField>
+
+## Pilot Configuration
+
+Pilot (istiod) is the Istio control plane component.
+
+### Pilot Values
+
+<ParamField path="pilot.enabled" type="boolean" default="true">
+  Controls whether Pilot is enabled.
+</ParamField>
+
+<ParamField path="pilot.autoscaleEnabled" type="boolean">
+  Controls whether a HorizontalPodAutoscaler is installed for Pilot.
+</ParamField>
+
+<ParamField path="pilot.autoscaleMin" type="integer">
+  Minimum number of replicas in the HorizontalPodAutoscaler for Pilot.
+</ParamField>
+
+<ParamField path="pilot.autoscaleMax" type="integer">
+  Maximum number of replicas in the HorizontalPodAutoscaler for Pilot.
+</ParamField>
+
+<ParamField path="pilot.resources" type="object">
+  K8s resources settings for the Pilot container.
+  
+  **Example:**
+  ```yaml
+  pilot:
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2048Mi
+      limits:
+        cpu: 2000m
+        memory: 4096Mi
+  ```
+</ParamField>
+
+<ParamField path="pilot.env" type="object">
+  Environment variables passed to the Pilot container.
+  
+  **Example:**
+  ```yaml
+  pilot:
+    env:
+      PILOT_ENABLE_PROTOCOL_SNIFFING_FOR_OUTBOUND: "false"
+      PILOT_ENABLE_PROTOCOL_SNIFFING_FOR_INBOUND: "false"
+  ```
+</ParamField>
+
+<ParamField path="pilot.traceSampling" type="number">
+  Trace sampling fraction. Used to set the fraction of time that traces are sampled.
+  
+  **Range:** 0.0 to 1.0
+</ParamField>
+
+<ParamField path="pilot.affinity" type="object">
+  K8s affinity to set on the Pilot Pods.
+</ParamField>
+
+<ParamField path="pilot.tolerations" type="array">
+  The node tolerations to be applied to the Pilot deployment.
+</ParamField>
+
+<ParamField path="pilot.nodeSelector" type="object">
+  K8s node selector.
+</ParamField>
+
+<ParamField path="pilot.podLabels" type="object">
+  Labels that are added to Pilot pods.
+</ParamField>
+
+<ParamField path="pilot.serviceAnnotations" type="object">
+  K8s annotations for the Pilot Service.
+</ParamField>
+
+<ParamField path="pilot.cni" type="object">
+  Configures whether to use an existing CNI installation for workloads.
+  
+  <Expandable title="properties">
+    <ParamField path="enabled" type="boolean">
+      Controls whether CNI should be used.
+    </ParamField>
+    
+    <ParamField path="provider" type="string">
+      CNI provider. Can be "default" or "multus".
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="pilot.trustedZtunnelNamespace" type="string">
+  If set, istiod will allow connections from trusted node proxy ztunnels in the provided namespace. Required for Ambient mesh.
+</ParamField>
+
+## Proxy Configuration
+
+Proxy configuration applies to all sidecars and gateways.
+
+### Proxy Values
+
+<ParamField path="global.proxy.image" type="string">
+  Image name or path for the proxy.
+  
+  **Default:** `proxyv2`
+</ParamField>
+
+<ParamField path="global.proxy.resources" type="object">
+  K8s resource requests and limits for the proxy container.
+  
+  **Example:**
+  ```yaml
+  global:
+    proxy:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 2000m
+          memory: 1024Mi
+  ```
+</ParamField>
+
+<ParamField path="global.proxy.logLevel" type="string">
+  Log level for proxy. Expected values: trace, debug, info, warning, error, critical, off.
+  
+  **Default:** `warning`
+</ParamField>
+
+<ParamField path="global.proxy.componentLogLevel" type="string">
+  Per-component log level for proxy.
+  
+  **Example:** `misc:error`
+</ParamField>
+
+<ParamField path="global.proxy.privileged" type="boolean">
+  Enables privileged securityContext for the istio-proxy container.
+</ParamField>
+
+<ParamField path="global.proxy.includeIPRanges" type="string">
+  Lists the IP ranges of Istio egress traffic that the sidecar captures.
+  
+  **Example:** `"172.30.0.0/16,172.20.0.0/16"`
+</ParamField>
+
+<ParamField path="global.proxy.excludeIPRanges" type="string">
+  Lists the excluded IP ranges of Istio egress traffic that the sidecar captures.
+</ParamField>
+
+<ParamField path="global.proxy.excludeInboundPorts" type="string">
+  Specifies the Istio ingress ports not to capture.
+</ParamField>
+
+<ParamField path="global.proxy.excludeOutboundPorts" type="string">
+  A comma separated list of outbound ports to be excluded from redirection to Envoy.
+</ParamField>
+
+<ParamField path="global.proxy.statusPort" type="integer">
+  Default port used for the Pilot agent's health checks.
+  
+  **Default:** `15020`
+</ParamField>
+
+<ParamField path="global.proxy.tracer" type="string">
+  Specify which tracer to use. One of: `zipkin`, `lightstep`, `datadog`, `stackdriver`, `openCensusAgent`, `none`.
+</ParamField>
+
+## CNI Configuration
+
+CNI configuration applies to the IstioCNI resource.
+
+### CNI Values
+
+<ParamField path="cni.cniBinDir" type="string">
+  The directory path within the cluster node's filesystem where the CNI binaries are to be installed.
+  
+  **Default:** `/var/lib/cni/bin`
+</ParamField>
+
+<ParamField path="cni.cniConfDir" type="string">
+  The directory path within the cluster node's filesystem where the CNI configuration files are to be installed.
+  
+  **Default:** `/etc/cni/net.d`
+</ParamField>
+
+<ParamField path="cni.cniConfFileName" type="string">
+  The name of the CNI plugin configuration file.
+  
+  **Default:** `istio-cni.conf`
+</ParamField>
+
+<ParamField path="cni.excludeNamespaces" type="array">
+  List of namespaces that should be ignored by the CNI plugin.
+  
+  **Example:**
+  ```yaml
+  cni:
+    excludeNamespaces:
+      - kube-system
+      - kube-public
+  ```
+</ParamField>
+
+<ParamField path="cni.ambient" type="object">
+  Configuration for Istio Ambient.
+  
+  <Expandable title="properties">
+    <ParamField path="enabled" type="boolean">
+      Controls whether ambient redirection is enabled.
+    </ParamField>
+    
+    <ParamField path="dnsCapture" type="boolean">
+      If enabled, and ambient is enabled, DNS redirection will be enabled.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="cni.repair" type="object">
+  Configuration for the CNI Repair controller.
+  
+  <Expandable title="properties">
+    <ParamField path="enabled" type="boolean">
+      Controls whether repair behavior is enabled.
+    </ParamField>
+    
+    <ParamField path="deletePods" type="boolean">
+      If true, the controller will delete broken pods.
+    </ParamField>
+    
+    <ParamField path="labelPods" type="boolean">
+      If true, the controller will label broken pods.
+    </ParamField>
+    
+    <ParamField path="repairPods" type="boolean">
+      If true, the controller will dynamically repair broken pods.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="cni.resources" type="object">
+  K8s resource requests and limits for the istio-cni Pods.
+</ParamField>
+
+## Mesh Configuration
+
+Mesh configuration controls runtime behavior.
+
+### MeshConfig Values
+
+<ParamField path="meshConfig.accessLogFile" type="string">
+  File path for the access log. Set to `/dev/stdout` to enable access logging.
+</ParamField>
+
+<ParamField path="meshConfig.accessLogEncoding" type="string">
+  Encoding for the access log. Options: `TEXT` or `JSON`.
+</ParamField>
+
+<ParamField path="meshConfig.defaultConfig.tracing" type="object">
+  Tracing configuration for all proxies in the mesh.
+</ParamField>
+
+<ParamField path="meshConfig.enableTracing" type="boolean">
+  Enables tracing for the mesh.
+</ParamField>
+
+<ParamField path="meshConfig.outboundTrafficPolicy" type="object">
+  Specifies the sidecar's default behavior when handling outbound traffic from the application.
+  
+  <Expandable title="properties">
+    <ParamField path="mode" type="string">
+      - `ALLOW_ANY`: Outbound traffic to unknown destinations will be allowed
+      - `REGISTRY_ONLY`: Restrict outbound traffic to services defined in the service registry
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Sidecar Injection Configuration
+
+### Sidecar Injector Values
+
+<ParamField path="sidecarInjectorWebhook.enableNamespacesByDefault" type="boolean">
+  Enables sidecar auto-injection in namespaces by default.
+</ParamField>
+
+<ParamField path="sidecarInjectorWebhook.rewriteAppHTTPProbe" type="boolean">
+  If true, webhook or istioctl injector will rewrite PodSpec for liveness health check to redirect request to sidecar.
+</ParamField>
+
+<ParamField path="sidecarInjectorWebhook.neverInjectSelector" type="array">
+  Instructs Istio to not inject the sidecar on those pods, based on labels.
+</ParamField>
+
+<ParamField path="sidecarInjectorWebhook.alwaysInjectSelector" type="array">
+  Instructs Istio to always inject the sidecar on those pods, based on labels.
+</ParamField>
+
+## Examples
+
+### Basic Custom Configuration
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    global:
+      proxy:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+    pilot:
+      autoscaleEnabled: true
+      autoscaleMin: 2
+      autoscaleMax: 5
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2048Mi
+```
+
+### Access Logging Configuration
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    meshConfig:
+      accessLogFile: /dev/stdout
+      accessLogEncoding: JSON
+```
+
+### Multi-Cluster Configuration
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    global:
+      meshID: mesh1
+      multiCluster:
+        clusterName: cluster1
+        enabled: true
+      network: network1
+```
+
+### Ambient Mesh Configuration
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  values:
+    pilot:
+      trustedZtunnelNamespace: "ztunnel"
+      env:
+        PILOT_ENABLE_AMBIENT: "true"
+```
+
+## Related Resources
+
+- [Istio](/api/istio) - Uses Helm values for control plane configuration
+- [IstioRevision](/api/istio-revision) - Uses Helm values for revision-specific configuration
+- [IstioCNI](/api/istio-cni) - Uses CNI-specific Helm values
+- [ZTunnel](/api/ztunnel) - Uses ZTunnel-specific Helm values
+- [Istio Operator API](https://istio.io/latest/docs/reference/config/istio.operator.v1alpha1/) - Complete Istio configuration reference

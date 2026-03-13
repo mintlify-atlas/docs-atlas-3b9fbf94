@@ -1,0 +1,557 @@
+---
+title: Configuration
+description: Configure Istio control plane through Helm values, profiles, and resource specifications
+---
+
+The Sail Operator uses Istio's Helm chart APIs for configuration, providing full access to all Istio installation options through the `values` field in custom resources.
+
+## Configuration Overview
+
+Configuration is applied through a combination of:
+
+1. **Profiles** - Predefined sets of configuration values
+2. **Helm Values** - User-specified values in `spec.values`
+3. **Vendor Defaults** - Platform-specific defaults (e.g., OpenShift)
+
+The final configuration is computed by merging these sources, with user values taking precedence.
+
+### Viewing Final Configuration
+
+To see the complete merged configuration applied to your control plane:
+
+```bash
+kubectl get configmap -n istio-system values -o yaml
+# For revision-based installations:
+kubectl get configmap -n istio-system values-<revision> -o yaml
+```
+
+## Profiles
+
+Profiles are built-in configuration presets for common deployment scenarios.
+
+### Available Profiles
+
+| Profile | Description | Use Case |
+|---------|-------------|----------|
+| `default` | Recommended settings for production | Standard deployments |
+| `demo` | All features enabled, low resource requirements | Demos, learning, testing |
+| `minimal` | Minimal components | Resource-constrained environments |
+| `remote` | Remote cluster in multi-cluster mesh | Multi-cluster setups |
+| `empty` | No default values | Full custom configuration |
+| `preview` | Experimental features | Testing new functionality |
+| `ambient` | Ambient mesh mode | Sidecar-less service mesh |
+| `openshift` | OpenShift-specific settings | Red Hat OpenShift |
+| `openshift-ambient` | Ambient mode for OpenShift | OpenShift with ambient mesh |
+
+### Specifying a Profile
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: default  # or demo, ambient, etc.
+```
+
+<Note>
+The `default` profile is always applied. On OpenShift, the `openshift` profile is additionally applied on top of `default`.
+</Note>
+
+## Helm Values Configuration
+
+The `spec.values` field exposes all configuration options from Istio's Helm charts.
+
+### Basic Configuration Example
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    global:
+      istioNamespace: istio-system
+      variant: debug  # Use debug image variant
+      logging:
+        level: "default:info"
+    pilot:
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2048Mi
+        limits:
+          cpu: 1000m
+          memory: 4096Mi
+      autoscaleEnabled: true
+      autoscaleMin: 2
+      autoscaleMax: 5
+```
+
+### Common Configuration Tasks
+
+#### Resource Limits and Requests
+
+```yaml
+values:
+  pilot:
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+```
+
+#### Logging Configuration
+
+```yaml
+values:
+  global:
+    logging:
+      level: "default:info,ads:debug,xds:debug"
+  pilot:
+    env:
+      PILOT_LOG_LEVEL: debug
+```
+
+Available log scopes: `default`, `ads`, `authn`, `authorization`, `cache`, `citadel`, `controller`, `klog`, `model`, `retry`, `validation`, `wasm`, `xds`
+
+#### Trust Domain and Certificates
+
+```yaml
+values:
+  meshConfig:
+    trustDomain: cluster.local
+    trustDomainAliases:
+      - cluster.example.com
+    certificates:
+      - secretName: dns.example1-service-account
+        dnsNames: [example1.istio-system.svc, example1.istio-system]
+```
+
+#### Egress Gateway
+
+```yaml
+values:
+  global:
+    meshID: mesh1
+  egressGateways:
+    - name: istio-egressgateway
+      enabled: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+```
+
+#### CNI Configuration
+
+```yaml
+values:
+  cni:
+    enabled: true
+    chained: true
+    cniBinDir: /var/lib/cni/bin
+    cniConfDir: /etc/cni/multus/net.d
+    cniConfFileName: istio-cni.conf
+```
+
+<Warning>
+On OpenShift, CNI is **required** and must be configured separately using an `IstioCNI` resource.
+</Warning>
+
+## MeshConfig
+
+MeshConfig provides global mesh-wide configuration settings.
+
+### Basic MeshConfig
+
+```yaml
+values:
+  meshConfig:
+    accessLogFile: /dev/stdout
+    accessLogEncoding: JSON
+    enableTracing: true
+    defaultConfig:
+      proxyMetadata:
+        ISTIO_META_DNS_CAPTURE: "true"
+      holdApplicationUntilProxyStarts: true
+      tracing:
+        sampling: 100.0
+```
+
+### Proxy Configuration
+
+```yaml
+values:
+  meshConfig:
+    defaultConfig:
+      concurrency: 2
+      discoveryAddress: istiod.istio-system.svc:15012
+      proxyMetadata:
+        ISTIO_META_DNS_CAPTURE: "true"
+        ISTIO_META_PROXY_CONFIG: |
+          {"terminationDrainDuration": "60s"}
+```
+
+### Outbound Traffic Policy
+
+```yaml
+values:
+  meshConfig:
+    outboundTrafficPolicy:
+      mode: ALLOW_ANY  # or REGISTRY_ONLY
+```
+
+- `ALLOW_ANY`: Allow traffic to any external service (default)
+- `REGISTRY_ONLY`: Only allow traffic to services in the registry
+
+### Service Discovery
+
+```yaml
+values:
+  meshConfig:
+    discoverySelectors:
+      - matchLabels:
+          env: production
+```
+
+## High Availability
+
+Configure istiod for high availability to minimize upgrade disruption.
+
+### Fixed Replica Count
+
+```yaml
+values:
+  pilot:
+    autoscaleEnabled: false
+    replicaCount: 3
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+```
+
+### Horizontal Pod Autoscaling
+
+```yaml
+values:
+  pilot:
+    autoscaleEnabled: true
+    autoscaleMin: 3
+    autoscaleMax: 10
+    cpu:
+      targetAverageUtilization: 80
+    memory:
+      targetAverageUtilization: 80
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+```
+
+### Pod Disruption Budget
+
+```yaml
+values:
+  pilot:
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 2
+```
+
+### Node Affinity and Tolerations
+
+```yaml
+values:
+  pilot:
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: node-role.kubernetes.io/control-plane
+              operator: DoesNotExist
+    tolerations:
+      - key: "node-role.kubernetes.io/master"
+        operator: "Exists"
+        effect: "NoSchedule"
+```
+
+## IstioCNI Configuration
+
+CNI plugin is configured separately through the `IstioCNI` resource.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+  values:
+    cni:
+      cniBinDir: /var/lib/cni/bin
+      cniConfDir: /etc/cni/net.d
+      cniConfFileName: istio-cni.conf
+      excludeNamespaces:
+        - kube-system
+        - kube-public
+        - kube-node-lease
+      logLevel: info
+      resourceQuotas:
+        enabled: false
+```
+
+### CNI Resource Configuration
+
+```yaml
+values:
+  cni:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 100Mi
+      limits:
+        cpu: 200m
+        memory: 200Mi
+```
+
+## ZTunnel Configuration (Ambient Mode)
+
+ZTunnel is configured through the `ZTunnel` resource in ambient mode.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+  values:
+    ztunnel:
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2048Mi
+        limits:
+          cpu: 1000m
+          memory: 2048Mi
+      terminationGracePeriodSeconds: 30
+      updateStrategy:
+        type: RollingUpdate  # or OnDelete
+```
+
+### ZTunnel Update Strategy
+
+```yaml
+values:
+  ztunnel:
+    updateStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 1
+```
+
+For long-lived connections, consider `OnDelete` strategy for controlled rollouts.
+
+## Gateway Configuration
+
+Gateways can be deployed using Gateway injection or Kubernetes Gateway API.
+
+### Ingress Gateway
+
+```yaml
+values:
+  gateways:
+    istio-ingressgateway:
+      enabled: true
+      replicaCount: 2
+      autoscaleEnabled: true
+      autoscaleMin: 2
+      autoscaleMax: 5
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+      serviceAnnotations:
+        service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+```
+
+## Multi-Cluster Configuration
+
+### Primary Cluster
+
+```yaml
+values:
+  global:
+    meshID: mesh1
+    multiCluster:
+      clusterName: cluster1
+    network: network1
+  pilot:
+    env:
+      EXTERNAL_ISTIOD: "false"
+```
+
+### Remote Cluster
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: remote
+  values:
+    global:
+      meshID: mesh1
+      multiCluster:
+        clusterName: cluster2
+      network: network2
+      remotePilotAddress: <external-istiod-address>
+```
+
+## Platform-Specific Configuration
+
+### OpenShift
+
+The `openshift` profile is automatically applied on OpenShift platforms:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: openshift  # Automatically applied
+  values:
+    cni:
+      cniBinDir: /var/lib/cni/bin
+      cniConfDir: /etc/cni/multus/net.d
+```
+
+IstioCNI is **required** on OpenShift:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+  profile: openshift
+```
+
+### AWS EKS
+
+```yaml
+values:
+  pilot:
+    serviceAnnotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+  gateways:
+    istio-ingressgateway:
+      serviceAnnotations:
+        service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+```
+
+### GKE
+
+```yaml
+values:
+  pilot:
+    env:
+      PILOT_ENABLE_WORKLOAD_ENTRY_AUTOREGISTRATION: "true"
+      PILOT_ENABLE_WORKLOAD_ENTRY_HEALTHCHECKS: "true"
+```
+
+## Vendor Defaults
+
+Vendor-specific defaults can be configured in `pkg/istiovalues/vendor_defaults.yaml`. These are version-specific and apply before user values:
+
+```yaml
+# Example vendor_defaults.yaml structure
+v1.29.1:
+  istio:
+    pilot:
+      env:
+        CUSTOM_ENV: "value"
+  istiocni:
+    cni:
+      cniConfDir: /custom/cni/conf/dir
+```
+
+Vendor defaults are overridden by user-specified values.
+
+## Validation
+
+The operator validates configuration at multiple levels:
+
+1. **CRD validation**: Basic type and required field checks
+2. **Webhook validation**: Cross-field validation rules
+3. **Runtime validation**: Helm chart rendering validation
+
+### Common Validation Errors
+
+**Namespace mismatch:**
+
+```yaml
+# ERROR: spec.values.global.istioNamespace must match spec.namespace
+spec:
+  namespace: istio-system
+  values:
+    global:
+      istioNamespace: istio-prod  # Must be istio-system
+```
+
+**Invalid version:**
+
+```yaml
+# ERROR: Version must be from supported list
+spec:
+  version: v1.20.0  # Not supported
+```
+
+**Immutable namespace:**
+
+```yaml
+# ERROR: spec.namespace is immutable
+# Cannot change namespace after creation
+```
+
+## Configuration Best Practices
+
+1. **Start with a profile** that matches your use case
+2. **Override selectively** - only specify values you need to change
+3. **Use resource limits** to prevent resource exhaustion
+4. **Enable HA** for production control planes (3+ replicas)
+5. **Version control** your Istio resource manifests
+6. **Test in non-prod** before applying to production
+7. **Monitor resource usage** and adjust limits accordingly
+8. **Keep configurations simple** - complexity increases maintenance burden
+
+## Further Reading
+
+- [Upgrading Guide](/operations/upgrading)
+- [Observability Configuration](/operations/observability)
+- [Troubleshooting Configuration Issues](/operations/troubleshooting#configuration-issues)
+- [Istio Helm Chart Values](https://istio.io/latest/docs/reference/config/istio.operator.v1alpha1/)

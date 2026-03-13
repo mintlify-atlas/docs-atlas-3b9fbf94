@@ -1,80 +1,286 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get your first Istio control plane running with Sail Operator in minutes
+icon: rocket
 ---
 
-## Get started in three steps
+This quickstart guide will walk you through installing the Sail Operator and deploying your first Istio control plane in a Kubernetes cluster.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, ensure you have:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+- A Kubernetes cluster (1.21 or later) or OpenShift cluster (4.13 or later)
+- `kubectl` configured to access your cluster
+- Helm 3.8 or later installed
+- Cluster admin permissions
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+You can use [KIND](https://kind.sigs.k8s.io/) to create a local Kubernetes cluster for testing.
 </Note>
+
+## Step 1: Install the Sail Operator
+
+<Steps>
+  <Step title="Add the Helm repository">
+    Add the Sail Operator Helm repository:
+
+    ```bash
+    helm repo add sail https://istio-ecosystem.github.io/sail-operator
+    helm repo update
+    ```
+  </Step>
+
+  <Step title="Install the operator">
+    Install the Sail Operator into your cluster:
+
+    ```bash
+    helm install sail-operator sail/sail-operator \
+      --namespace istio-system \
+      --create-namespace
+    ```
+
+    Wait for the operator to be ready:
+
+    ```bash
+    kubectl wait --for=condition=Available deployment/sail-operator \
+      -n istio-system \
+      --timeout=300s
+    ```
+
+    Expected output:
+    ```
+    deployment.apps/sail-operator condition met
+    ```
+  </Step>
+
+  <Step title="Verify the installation">
+    Check that the operator is running:
+
+    ```bash
+    kubectl get pods -n istio-system
+    ```
+
+    You should see the operator pod in `Running` state:
+    ```
+    NAME                             READY   STATUS    RESTARTS   AGE
+    sail-operator-5f7d8c6c4d-x9z2k   1/1     Running   0          30s
+    ```
+  </Step>
+</Steps>
+
+## Step 2: Deploy an Istio Control Plane
+
+Now that the operator is installed, deploy an Istio control plane using a custom resource.
+
+<Steps>
+  <Step title="Create the Istio resource">
+    Create a file named `istio.yaml` with the following content:
+
+    ```yaml istio.yaml
+    apiVersion: sailoperator.io/v1
+    kind: Istio
+    metadata:
+      name: default
+    spec:
+      version: v1.29-latest
+      namespace: istio-system
+    ```
+
+    This creates an Istio control plane with:
+    - **Name**: `default`
+    - **Version**: Latest patch of Istio 1.29
+    - **Namespace**: `istio-system`
+
+    Apply the configuration:
+
+    ```bash
+    kubectl apply -f istio.yaml
+    ```
+  </Step>
+
+  <Step title="Wait for the control plane">
+    Monitor the Istio resource status:
+
+    ```bash
+    kubectl get istio default -n istio-system --watch
+    ```
+
+    Wait until the `STATUS` shows `Healthy`:
+    ```
+    NAME      NAMESPACE      REVISIONS   READY   IN USE   ACTIVE REVISION   STATUS    VERSION        AGE
+    default   istio-system   1           1       1        default           Healthy   v1.29.1        2m
+    ```
+
+    Press `Ctrl+C` to stop watching.
+  </Step>
+
+  <Step title="Verify the deployment">
+    Check that the istiod deployment is running:
+
+    ```bash
+    kubectl get pods -n istio-system -l app=istiod
+    ```
+
+    Expected output:
+    ```
+    NAME                            READY   STATUS    RESTARTS   AGE
+    istiod-default-5d9c8d9f4-abc12  1/1     Running   0          2m
+    ```
+
+    Check the IstioRevision created by the operator:
+
+    ```bash
+    kubectl get istiorevision
+    ```
+
+    Output:
+    ```
+    NAME      TYPE      READY   STATUS    IN USE   VERSION    AGE
+    default   Local     True    Healthy   True     v1.29.1    2m
+    ```
+  </Step>
+</Steps>
+
+## Step 3: Deploy a Sample Application
+
+Let's verify Istio is working by deploying a simple application with automatic sidecar injection.
+
+<Steps>
+  <Step title="Enable automatic injection">
+    Label a namespace for automatic sidecar injection:
+
+    ```bash
+    kubectl create namespace bookinfo
+    kubectl label namespace bookinfo istio-injection=enabled
+    ```
+  </Step>
+
+  <Step title="Deploy the Bookinfo application">
+    Deploy the sample application:
+
+    ```bash
+    kubectl apply -n bookinfo -f https://raw.githubusercontent.com/istio/istio/master/samples/bookinfo/platform/kube/bookinfo.yaml
+    ```
+
+    Wait for the pods to be ready:
+
+    ```bash
+    kubectl wait --for=condition=Ready pod --all -n bookinfo --timeout=300s
+    ```
+  </Step>
+
+  <Step title="Verify sidecar injection">
+    Check that each pod has 2 containers (app + sidecar):
+
+    ```bash
+    kubectl get pods -n bookinfo
+    ```
+
+    You should see `2/2` in the `READY` column:
+    ```
+    NAME                              READY   STATUS    RESTARTS   AGE
+    details-v1-5f4d584748-abc12       2/2     Running   0          1m
+    productpage-v1-564d4686f-xyz89    2/2     Running   0          1m
+    ratings-v1-686ccfb5d8-def34       2/2     Running   0          1m
+    reviews-v1-86896b6b4c-ghi56       2/2     Running   0          1m
+    ```
+
+    Each pod has the application container and the Istio sidecar proxy.
+  </Step>
+</Steps>
+
+## What's Next?
+
+Congratulations! You've successfully deployed Istio using the Sail Operator. Here are some suggested next steps:
+
+<CardGroup cols={2}>
+  <Card title="Deploy Ambient Mode" icon="cloud" href="/deployment/ambient-mode">
+    Try ambient mesh for a sidecar-free architecture
+  </Card>
+  <Card title="Configure Gateways" icon="door-open" href="https://istio.io/latest/docs/tasks/traffic-management/ingress/ingress-control/">
+    Set up ingress and egress gateways
+  </Card>
+  <Card title="Customize Configuration" icon="sliders" href="/api/istio">
+    Learn about Helm values and customization options
+  </Card>
+  <Card title="Explore API Reference" icon="book" href="/api/istio">
+    View the complete custom resource reference
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Operator pod is not starting">
+    Check the operator logs:
+    ```bash
+    kubectl logs -n istio-system -l app.kubernetes.io/name=sail-operator
+    ```
+
+    Common issues:
+    - Insufficient RBAC permissions
+    - Image pull errors (check image pull secrets)
+    - Resource constraints (check node resources)
+  </Accordion>
+
+  <Accordion title="Istio resource stuck in Reconciling state">
+    Check the Istio resource conditions:
+    ```bash
+    kubectl get istio default -o yaml
+    ```
+
+    Look for error messages in the `status.conditions` field. Common issues:
+    - Invalid version specified
+    - Namespace doesn't exist
+    - Resource quota exceeded
+  </Accordion>
+
+  <Accordion title="Sidecar not injected into pods">
+    Verify the namespace label:
+    ```bash
+    kubectl get namespace bookinfo --show-labels
+    ```
+
+    Ensure `istio-injection=enabled` is present. If you add the label after deploying pods, restart them:
+    ```bash
+    kubectl rollout restart deployment -n bookinfo
+    ```
+  </Accordion>
+
+  <Accordion title="Cannot access the application">
+    Check that all pods are running:
+    ```bash
+    kubectl get pods -n bookinfo
+    kubectl get pods -n istio-system
+    ```
+
+    Verify the istiod service is available:
+    ```bash
+    kubectl get svc -n istio-system
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Info>
+For more detailed troubleshooting, see the [Troubleshooting Guide](/operations/troubleshooting).
+</Info>
+
+## Cleanup
+
+To remove everything created in this quickstart:
+
+```bash
+# Delete the sample application
+kubectl delete namespace bookinfo
+
+# Delete the Istio control plane
+kubectl delete istio default
+
+# Uninstall the operator
+helm uninstall sail-operator -n istio-system
+```
+
+<Warning>
+The Istio custom resources have finalizers that clean up resources during deletion. Wait for the `Istio` resource to be fully deleted before uninstalling the operator.
+</Warning>

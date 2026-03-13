@@ -1,0 +1,394 @@
+---
+title: Deploying Ambient Mesh
+description: Deploy Istio in ambient mode with IstioCNI and ZTunnel for sidecar-less service mesh
+---
+
+Ambient mesh is a sidecar-less data plane mode that separates Layer 4 (L4) and Layer 7 (L7) processing into distinct components, eliminating per-pod sidecars while maintaining security and observability.
+
+## Overview
+
+Ambient mode uses:
+
+- **ZTunnel**: Lightweight L4 node proxy providing mTLS, simple authorization, and telemetry
+- **Waypoint Proxies**: Optional L7 proxies for advanced traffic management
+- **IstioCNI**: CNI plugin for transparent traffic redirection
+
+Benefits over sidecar mode:
+- Reduced resource overhead (no per-pod proxy)
+- Faster pod startup times
+- Incremental L7 feature adoption
+- Independent scaling of L7 capabilities
+
+## Prerequisites
+
+- Kubernetes cluster version 1.27 or later (or OpenShift 4.14+)
+- Istio version v1.24.0 or later
+- Sail Operator installed (see [Helm Installation](/deployment/helm-installation))
+- `kubectl` or `oc` CLI configured
+
+## Installation Steps
+
+### 1. Create Required Namespaces
+
+Create namespaces for all ambient components:
+
+```bash
+kubectl create namespace istio-system
+kubectl create namespace istio-cni
+kubectl create namespace ztunnel
+```
+
+Label the namespaces for discovery:
+
+```bash
+kubectl label namespace istio-system istio-discovery=enabled
+kubectl label namespace ztunnel istio-discovery=enabled
+```
+
+<Note>
+Both the Istio control plane namespace and ZTunnel namespace must be labeled before installing ZTunnel to avoid TLS signing errors.
+</Note>
+
+### 2. Deploy the Istio Control Plane
+
+Create an `Istio` resource with ambient profile:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      trustedZtunnelNamespace: ztunnel
+    meshConfig:
+      discoverySelectors:
+        - matchLabels:
+            istio-discovery: enabled
+```
+
+Apply the configuration:
+
+```bash
+kubectl apply -f istio-ambient.yaml
+```
+
+<Warning>
+Only the **InPlace** update strategy is supported for ambient mode. RevisionBased updates are not compatible with ZTunnel's cluster-wide singleton architecture.
+</Warning>
+
+### 3. Deploy IstioCNI
+
+Create the `IstioCNI` resource:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+```
+
+Apply:
+
+```bash
+kubectl apply -f istiocni.yaml
+```
+
+### 4. Deploy ZTunnel
+
+Create the `ZTunnel` resource:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+```
+
+Apply:
+
+```bash
+kubectl apply -f ztunnel.yaml
+```
+
+<Note>
+The ZTunnel resource name must be `default` - this is enforced by a CRD validation rule ensuring only one cluster-wide ZTunnel instance exists.
+</Note>
+
+### 5. Verify the Installation
+
+Check all components are healthy:
+
+```bash
+# Verify Istio control plane
+kubectl get istio -n istio-system
+
+# Verify IstioCNI
+kubectl get istiocni -n istio-cni
+
+# Verify ZTunnel
+kubectl get ztunnel -n ztunnel
+```
+
+Expected output:
+
+```
+NAME      REVISIONS   READY   IN USE   ACTIVE REVISION   STATUS    VERSION    AGE
+default   1           1       0        default           Healthy   v1.29.1    2m
+
+NAME      READY   STATUS    VERSION    AGE
+default   True    Healthy   v1.29.1    1m
+
+NAME      READY   STATUS    VERSION    AGE
+default   True    Healthy   v1.29.1    1m
+```
+
+Verify ZTunnel pods are running on all nodes:
+
+```bash
+kubectl get pods -n ztunnel -o wide
+```
+
+## Adding Applications to Ambient Mesh
+
+### Label Namespace for Ambient Mode
+
+Add applications to the ambient mesh by labeling their namespace:
+
+```bash
+kubectl label namespace <your-namespace> istio.io/dataplane-mode=ambient
+```
+
+For example:
+
+```bash
+kubectl create namespace bookinfo
+kubectl label namespace bookinfo istio-discovery=enabled
+kubectl label namespace bookinfo istio.io/dataplane-mode=ambient
+```
+
+<Note>
+Unlike sidecar mode, you don't need to restart pods. Ambient mesh applies immediately without container injection.
+</Note>
+
+### Verify Ambient Enrollment
+
+Check that ZTunnel recognizes the workloads:
+
+```bash
+istioctl ztunnel-config workloads -n ztunnel
+```
+
+Workloads in ambient mesh show `HBONE` protocol:
+
+```
+NAMESPACE   POD NAME                     ADDRESS       NODE          WAYPOINT   PROTOCOL
+bookinfo    productpage-v1-abc123-xyz    10.244.0.10   node-1        None       HBONE
+bookinfo    details-v1-def456-abc        10.244.0.11   node-1        None       HBONE
+```
+
+## Deploying Waypoint Proxies (Optional)
+
+Waypoint proxies provide L7 features like advanced routing, retries, and authorization policies.
+
+### Deploy a Waypoint
+
+Create a waypoint for a namespace:
+
+```bash
+istioctl waypoint apply --namespace bookinfo
+```
+
+Or deploy using a Gateway resource:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: bookinfo-waypoint
+  namespace: bookinfo
+  labels:
+    istio.io/waypoint-for: service
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+```
+
+### Use the Waypoint
+
+Label services to use the waypoint:
+
+```bash
+kubectl label service reviews -n bookinfo istio.io/use-waypoint=bookinfo-waypoint
+```
+
+## Complete Example: Bookinfo Application
+
+Deploy the Bookinfo sample application in ambient mode:
+
+```bash
+# Create and configure namespace
+kubectl create namespace bookinfo
+kubectl label namespace bookinfo istio-discovery=enabled
+
+# Deploy application
+kubectl apply -n bookinfo -f https://raw.githubusercontent.com/istio/istio/release-1.29/samples/bookinfo/platform/kube/bookinfo.yaml
+
+# Add to ambient mesh
+kubectl label namespace bookinfo istio.io/dataplane-mode=ambient
+
+# Deploy gateway
+kubectl apply -n bookinfo -f https://raw.githubusercontent.com/istio/istio/release-1.29/samples/bookinfo/gateway-api/bookinfo-gateway.yaml
+
+# Get gateway URL
+export GATEWAY_URL=$(kubectl get gtw bookinfo-gateway -n bookinfo -o jsonpath='{.status.addresses[0].value}'):$(kubectl get gtw bookinfo-gateway -n bookinfo -o jsonpath='{.spec.listeners[?(@.name=="http")].port}')
+echo "http://${GATEWAY_URL}/productpage"
+```
+
+## Customizing Ambient Components
+
+### Configure ZTunnel Resources
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+  values:
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1024Mi
+```
+
+### Configure IstioCNI
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+  values:
+    cni:
+      logLevel: debug
+      excludeNamespaces:
+        - kube-system
+        - kube-public
+```
+
+## Monitoring and Observability
+
+### Verify mTLS is Enabled
+
+Check ZTunnel logs for mTLS traffic:
+
+```bash
+kubectl logs -n ztunnel -l app=ztunnel | grep -E "inbound|outbound"
+```
+
+Look for `src.identity` and `dst.identity` SPIFFE identifiers in the logs.
+
+### Deploy Prometheus for Metrics
+
+```bash
+kubectl apply -n istio-system -f https://raw.githubusercontent.com/istio/istio/master/samples/addons/prometheus.yaml
+```
+
+<Note>
+On OpenShift, apply PodMonitor resources in the ztunnel namespace to integrate with OpenShift monitoring.
+</Note>
+
+## Troubleshooting
+
+### Workloads Not in Ambient Mesh
+
+Verify namespace labels:
+
+```bash
+kubectl get namespace <namespace> --show-labels
+```
+
+Check ZTunnel logs:
+
+```bash
+kubectl logs -n ztunnel -l app=ztunnel
+```
+
+### ZTunnel Pods Not Running
+
+Check node compatibility:
+
+```bash
+kubectl describe daemonset ztunnel -n ztunnel
+```
+
+Review ZTunnel resource status:
+
+```bash
+kubctl get ztunnel default -n ztunnel -o yaml
+```
+
+### Traffic Not Encrypted
+
+Verify both namespaces have `istio-discovery=enabled` label before ZTunnel installation.
+
+## Cleanup
+
+Remove applications from ambient mesh:
+
+```bash
+kubectl label namespace <namespace> istio.io/dataplane-mode-
+```
+
+<Warning>
+You must remove all workloads from the ambient data plane before uninstalling Istio.
+</Warning>
+
+Delete ambient components:
+
+```bash
+kubectl delete ztunnel default -n ztunnel
+kubectl delete istiocni default -n istio-cni
+kubectl delete istio default -n istio-system
+```
+
+## Next Steps
+
+- Learn about [waypoint proxies](https://istio.io/latest/docs/ambient/usage/waypoint/) for L7 features
+- Configure [authorization policies](https://istio.io/latest/docs/reference/config/security/authorization-policy/)
+- Set up [observability](/operations/observability)
+- Understand [update strategies](/concepts/update-strategies) for ambient mode
+
+## Related Resources
+
+- [ZTunnel API Reference](/api/ztunnel)
+- [IstioCNI API Reference](/api/istio-cni)
+- [Istio Ambient Documentation](https://istio.io/latest/docs/ambient/)
+- [ZTunnel Helm Values](https://artifacthub.io/packages/helm/istio-official/ztunnel?modal=values)
+- [CNI Helm Values](https://artifacthub.io/packages/helm/istio-official/cni?modal=values)

@@ -1,0 +1,479 @@
+---
+title: Migrating from istioctl
+description: Migrate from istioctl-based Istio installations to the Sail Operator
+icon: arrow-right-arrow-left
+---
+
+This guide explains how to migrate from traditional istioctl-based Istio installations to the Sail Operator. The Sail Operator provides a Kubernetes-native approach to managing Istio with support for multiple versions and simplified upgrades.
+
+## Overview
+
+The Sail Operator replaces the deprecated Istio in-cluster operator and provides a modern, operator-based approach to managing Istio. Key differences include:
+
+- **Version Management**: Sail Operator can manage and install different versions of Istio, while the in-cluster operator always installs its bundled version
+- **Decoupled Upgrades**: Operator updates are separate from control plane updates
+- **Kubernetes-Native APIs**: Uses Custom Resources instead of IstioOperator
+- **Enhanced Lifecycle Management**: Improved support for multi-version deployments and canary upgrades
+
+## Prerequisites
+
+<Note>
+Ensure you have cluster-admin access and have backed up your existing Istio configuration before proceeding.
+</Note>
+
+**Requirements:**
+- Kubernetes 1.21+ or OpenShift 4.14+
+- Sail Operator v1.27 or later
+- Existing Istio installation via istioctl or in-cluster operator
+- `kubectl` and `yq` command-line tools
+
+**Backup Your Configuration:**
+
+```bash
+# Backup all Istio resources
+kubectl get istio,istiocni,virtualservice,destinationrule,authorizationpolicy,requestauthentication,peerauthentication -A -o yaml > istio-backup.yaml
+
+# Backup IstioOperator configuration if using in-cluster operator
+kubectl get istiooperator -A -o yaml > istiooperator-backup.yaml
+```
+
+## Understanding API Differences
+
+The Sail Operator uses different Custom Resources than the IstioOperator. Here's how they map:
+
+### Resource Mapping
+
+| IstioOperator | Sail Operator | Purpose |
+|--------------|---------------|----------|
+| `IstioOperator` | `Istio` | Control plane configuration |
+| `spec.values` | `spec.values` | Helm chart values (same format) |
+| `spec.meshConfig` | `spec.values.meshConfig` | Mesh configuration (moved under values) |
+| `spec.components` | `spec.values.<component>.enabled` | Component toggles |
+| N/A | `IstioCNI` | CNI plugin (separate resource) |
+| N/A | `ZTunnel` | Ambient mode tunnels |
+
+### Key Differences
+
+<Warning>
+**Environment Variable Type Change**: All `.env` fields in Sail Operator are `map[string]string`. Boolean values like `true` or `false` must be quoted as strings.
+</Warning>
+
+**IstioOperator Configuration:**
+```yaml
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+spec:
+  values:
+    pilot:
+      env:
+        PILOT_ENABLE_STATUS: true  # Boolean
+```
+
+**Sail Operator Configuration:**
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+spec:
+  values:
+    pilot:
+      env:
+        PILOT_ENABLE_STATUS: "true"  # Must be string
+```
+
+## Migration Methods
+
+### Method 1: Using the Conversion Script (Recommended)
+
+The Sail Operator provides a script to automate configuration conversion:
+
+```bash
+# Download the conversion script
+curl -L https://github.com/istio-ecosystem/sail-operator/raw/main/tools/configuration-converter.sh -o configuration-converter.sh
+chmod +x configuration-converter.sh
+
+# Convert your IstioOperator configuration
+./configuration-converter.sh istiooperator.yaml sail-config.yaml -n istio-system -v v1.29.1
+```
+
+**Script Parameters:**
+- `<input>`: Path to your IstioOperator YAML file (required)
+- `[output]`: Output file path (optional, defaults to `<input>-sail.yaml`)
+- `-n <namespace>`: Target namespace (optional, defaults to `istio-system`)
+- `-v <version>`: Istio version to install (optional, uses operator default if omitted)
+
+**Example Usage:**
+
+```bash
+# Basic conversion
+./configuration-converter.sh /path/to/istio_config.yaml
+
+# With custom output, namespace, and version
+./configuration-converter.sh istio_config.yaml custom-output.yaml -n custom-namespace -v v1.29.1
+```
+
+<Warning>
+The conversion script is under active development. Always review the output carefully before applying to your cluster.
+</Warning>
+
+### Method 2: Manual Configuration Migration
+
+For simple configurations or to understand the mapping, you can convert manually.
+
+**Original IstioOperator:**
+```yaml
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: default
+spec:
+  meshConfig:
+    accessLogFile: /dev/stdout
+  values:
+    pilot:
+      traceSampling: 0.1
+    global:
+      istiod:
+        enableAnalysis: true
+```
+
+**Converted Sail Operator:**
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    meshConfig:
+      accessLogFile: /dev/stdout
+    pilot:
+      traceSampling: 0.1
+    global:
+      istiod:
+        enableAnalysis: true
+```
+
+**Key Changes:**
+1. `spec.version` field is now required (or will use operator default)
+2. `spec.meshConfig` moved to `spec.values.meshConfig`
+3. `spec.namespace` specifies where control plane is deployed
+
+## Migration Steps
+
+### Step 1: Install the Sail Operator
+
+<Tabs>
+  <Tab title="OpenShift Web Console">
+    1. Navigate to **Operators** → **OperatorHub**
+    2. Search for "sail"
+    3. Select the Sail Operator and click **Install**
+    4. Use default installation settings
+    5. Verify installation in **Operators** → **Installed Operators**
+  </Tab>
+  <Tab title="OpenShift CLI">
+    ```bash
+    # Create Subscription
+    kubectl apply -f - <<EOF
+    apiVersion: operators.coreos.com/v1alpha1
+    kind: Subscription
+    metadata:
+      name: sailoperator
+      namespace: openshift-operators
+    spec:
+      channel: "0.1-nightly"
+      installPlanApproval: Automatic
+      name: sailoperator
+      source: community-operators
+      sourceNamespace: openshift-marketplace
+    EOF
+
+    # Verify installation
+    kubectl get csv -n openshift-operators | grep sailoperator
+    ```
+  </Tab>
+  <Tab title="Kubernetes">
+    ```bash
+    # Install using kubectl
+    kubectl create namespace sail-operator
+    kubectl apply -f https://github.com/istio-ecosystem/sail-operator/releases/latest/download/sail-operator.yaml
+
+    # Verify installation
+    kubectl get pods -n sail-operator
+    ```
+  </Tab>
+</Tabs>
+
+### Step 2: Convert Your Configuration
+
+Choose between the automated script (recommended) or manual conversion:
+
+```bash
+# Using the conversion script
+./configuration-converter.sh istiooperator.yaml sail-config.yaml -v v1.29.1
+
+# Review the generated configuration
+cat sail-config.yaml
+```
+
+### Step 3: Deploy the New Configuration
+
+<Warning>
+This step will trigger a control plane update. Plan for a maintenance window and ensure you have a rollback plan.
+</Warning>
+
+```bash
+# Create the Istio resource
+kubectl apply -f sail-config.yaml
+
+# Wait for the control plane to be ready
+kubectl wait --for=condition=Ready istios/default -n istio-system --timeout=5m
+
+# Verify the deployment
+kubectl get istio -n istio-system
+kubectl get pods -n istio-system
+```
+
+**Expected Output:**
+```
+NAME      NAMESPACE      PROFILE   REVISIONS   READY   IN USE   ACTIVE REVISION   STATUS    VERSION   AGE
+default   istio-system             1           1       1        default           Healthy   v1.29.1   5m
+```
+
+### Step 4: Deploy CNI (If Required)
+
+If you're using CNI on OpenShift or planning to use Ambient mode:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  namespace: istio-cni
+  version: v1.29.1
+```
+
+```bash
+# Create the IstioCNI namespace
+kubectl create namespace istio-cni
+
+# Apply the configuration
+kubectl apply -f istiocni-config.yaml
+
+# Verify deployment
+kubectl wait --for=condition=Ready istiocnis/default --timeout=3m
+kubectl get pods -n istio-cni
+```
+
+### Step 5: Validate the Migration
+
+Verify that your workloads are still functioning correctly:
+
+```bash
+# Check sidecar injection is working
+kubectl get pods -n <your-namespace> -o jsonpath='{.items[*].spec.containers[*].name}'
+
+# Verify service mesh connectivity
+kubectl exec -n <namespace> <pod-name> -c istio-proxy -- curl -sS http://example.svc.cluster.local
+
+# Check policy enforcement
+kubectl get authorizationpolicy,peerauthentication -A
+
+# Verify control plane health
+istioctl proxy-status
+istioctl version
+```
+
+### Step 6: Remove Old Operator (Optional)
+
+Once you've validated the migration, you can remove the old IstioOperator resources:
+
+```bash
+# Delete IstioOperator resources
+kubectl delete istiooperator --all -A
+
+# If using the in-cluster operator, remove it
+kubectl delete deployment istio-operator -n istio-operator
+kubectl delete namespace istio-operator
+```
+
+## Handling Special Cases
+
+### Components Field
+
+The Sail Operator doesn't have a `spec.components` field. Instead, enable/disable components directly:
+
+**IstioOperator:**
+```yaml
+spec:
+  components:
+    egressGateways:
+    - name: istio-egressgateway
+      enabled: true
+```
+
+**Sail Operator:**
+```yaml
+spec:
+  values:
+    gateways:
+      istio-egressgateway:
+        enabled: true
+```
+
+<Note>
+Kubernetes overlays and other advanced `spec.components` features are not currently available in the Sail Operator.
+</Note>
+
+### Environment Variables
+
+Remember to quote all boolean and numeric values in `.env` fields:
+
+```yaml
+spec:
+  values:
+    pilot:
+      env:
+        PILOT_ENABLE_STATUS: "true"          # Quoted
+        PILOT_TRACE_SAMPLING: "100"          # Quoted
+        PILOT_ENABLE_ANALYSIS: "false"       # Quoted
+```
+
+### Multi-Cluster Configurations
+
+Multi-cluster mesh configurations require additional setup. Refer to the multi-cluster documentation for details.
+
+## Troubleshooting
+
+### Configuration Validation Errors
+
+**Error: Invalid boolean value in env field**
+```
+Error: .spec.values.pilot.env.PILOT_ENABLE_STATUS: Invalid type. Expected: string, given: boolean
+```
+
+**Solution:** Quote all boolean values in `.env` fields:
+```yaml
+env:
+  PILOT_ENABLE_STATUS: "true"  # Use quotes
+```
+
+### Control Plane Not Ready
+
+**Check operator logs:**
+```bash
+kubectl logs -n sail-operator -l app=sail-operator --tail=100
+```
+
+**Check Istio resource status:**
+```bash
+kubectl describe istio default -n istio-system
+```
+
+### Sidecar Injection Not Working
+
+**Verify namespace labels:**
+```bash
+kubectl get namespace <your-namespace> --show-labels
+```
+
+**Expected label:**
+```
+istio.io/rev=default
+```
+
+**Restart workloads to trigger injection:**
+```bash
+kubectl rollout restart deployment -n <your-namespace>
+```
+
+## Rollback Procedure
+
+If you need to rollback to the previous installation:
+
+```bash
+# Delete the Sail Operator resources
+kubectl delete istio default -n istio-system
+kubectl delete istiocni default 2>/dev/null || true
+
+# Restore the original configuration
+kubectl apply -f istiooperator-backup.yaml
+
+# Wait for the control plane to stabilize
+kubectl wait --for=condition=Available deployment/istiod -n istio-system --timeout=5m
+
+# Verify workloads are healthy
+kubectl get pods -A | grep istio-proxy
+```
+
+## Version Management
+
+One of the key benefits of Sail Operator is simplified version management:
+
+### Upgrading Istio
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.30.0  # Update to new version
+  updateStrategy:
+    type: InPlace    # Or RevisionBased for canary upgrades
+```
+
+### Supported Versions
+
+The Sail Operator supports the current and two previous minor Istio versions (n-2 policy):
+
+```bash
+# Check supported versions
+kubectl get istio default -n istio-system -o jsonpath='{.spec.version}'
+```
+
+## Additional Considerations
+
+### CNI Lifecycle Management
+
+Unlike the IstioOperator, the CNI plugin is managed separately in Sail Operator. This allows for independent CNI updates and better isolation.
+
+### Profile Support
+
+Sail Operator supports Istio profiles:
+
+```yaml
+spec:
+  profile: ambient  # Or default, demo, minimal, etc.
+```
+
+### Vendor-Specific Configurations
+
+Downstream vendors can customize default values via `pkg/istiovalues/vendor_defaults.yaml`. Check with your vendor for specific configuration requirements.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configure Ambient Mode" icon="wave-pulse" href="/migration/sidecar-to-ambient">
+    Migrate from sidecar to ambient mode for reduced resource usage
+  </Card>
+  <Card title="Version Management" icon="code-branch" href="/operations/upgrading">
+    Learn about Istio version upgrades and canary deployments
+  </Card>
+  <Card title="API Reference" icon="book" href="/api/istio">
+    Complete Sail Operator API documentation
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Common issues and solutions
+  </Card>
+</CardGroup>
+
+## Resources
+
+- [IstioOperator Deprecation Announcement](https://istio.io/latest/blog/2024/in-cluster-operator-deprecation-announcement/)
+- [Sail Operator GitHub Repository](https://github.com/istio-ecosystem/sail-operator)
+- [Configuration Converter Script](https://github.com/istio-ecosystem/sail-operator/blob/main/tools/configuration-converter.sh)
+- [Sail Operator User Documentation](https://github.com/istio-ecosystem/sail-operator/tree/main/docs)

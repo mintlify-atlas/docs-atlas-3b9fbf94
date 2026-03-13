@@ -1,0 +1,207 @@
+---
+title: IstioCNI
+description: IstioCNI resource API reference for the Sail Operator
+---
+
+The `IstioCNI` resource represents a deployment of the Istio CNI plugin. The CNI plugin is required for OpenShift clusters and for Ambient mesh deployments. It handles pod networking configuration, eliminating the need for elevated privileges in the init containers.
+
+<Info>
+The IstioCNI resource must be named `default` - this is enforced by validation.
+</Info>
+
+## Specification
+
+### Metadata
+
+<ParamField path="apiVersion" type="string" required>
+  `sailoperator.io/v1`
+</ParamField>
+
+<ParamField path="kind" type="string" required>
+  `IstioCNI`
+</ParamField>
+
+<ParamField path="metadata.name" type="string" required>
+  Must be `default`
+</ParamField>
+
+### Spec
+
+<ParamField path="spec.version" type="string" required default="v1.29.1">
+  Defines the version of Istio to install. Must be one of the supported versions.
+  
+  **Supported versions include:** v1.29-latest, v1.29.1, v1.29.0, v1.28-latest, v1.28.5, v1.28.4, v1.28.3, v1.28.2, v1.28.1, v1.28.0, v1.27-latest, v1.27.8, v1.27.7, v1.27.6, v1.27.5, v1.27.4, v1.27.3, v1.27.2, v1.27.1, v1.27.0, and others.
+</ParamField>
+
+<ParamField path="spec.namespace" type="string" default="istio-cni">
+  Namespace to which the Istio CNI component should be installed.
+  
+  <Warning>This field is immutable after creation.</Warning>
+</ParamField>
+
+<ParamField path="spec.profile" type="string">
+  The built-in installation configuration profile to use. The 'default' profile is always applied. On OpenShift, the 'openshift' profile is also applied on top of 'default'.
+  
+  **Available profiles:** `ambient`, `default`, `demo`, `empty`, `openshift`, `openshift-ambient`, `preview`, `remote`, `stable`
+</ParamField>
+
+<ParamField path="spec.values" type="object">
+  Defines the values to be passed to the Helm charts when installing Istio CNI. This includes CNI-specific configuration options.
+  
+  <Expandable title="Common CNI values">
+    <ParamField path="cni.cniBinDir" type="string">
+      The directory path within the cluster node's filesystem where the CNI binaries are to be installed. Typically `/var/lib/cni/bin`.
+    </ParamField>
+    
+    <ParamField path="cni.cniConfDir" type="string">
+      The directory path within the cluster node's filesystem where the CNI configuration files are to be installed. Typically `/etc/cni/net.d`.
+    </ParamField>
+    
+    <ParamField path="cni.excludeNamespaces" type="array">
+      List of namespaces that should be ignored by the CNI plugin.
+    </ParamField>
+    
+    <ParamField path="cni.ambient.enabled" type="boolean">
+      Controls whether ambient redirection is enabled.
+    </ParamField>
+    
+    <ParamField path="cni.repair.enabled" type="boolean">
+      Controls whether the CNI repair controller is enabled.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Status
+
+The status subresource provides information about the current state of the IstioCNI deployment.
+
+<ParamField path="status.state" type="string">
+  Reports the current state of the object. Possible values include:
+  
+  - `Healthy` - The CNI plugin is fully reconciled and all components are ready
+  - `ReconcileError` - The reconciliation of the resource has failed, but will be retried
+  - `DaemonSetNotReady` - The istio-cni-node DaemonSet is not ready
+  - `ReadinessCheckFailed` - The DaemonSet readiness status could not be ascertained
+</ParamField>
+
+<ParamField path="status.observedGeneration" type="integer">
+  The most recent generation observed for this IstioCNI object.
+</ParamField>
+
+<ParamField path="status.conditions" type="array">
+  Represents the latest available observations of the object's current state. Common condition types include:
+  
+  - **Reconciled**: Whether the controller has successfully reconciled the resources
+  - **Ready**: Whether the istio-cni-node DaemonSet is ready
+</ParamField>
+
+## Conditions
+
+### Reconciled Condition
+
+Indicates whether the controller has successfully reconciled the resources defined through the CR.
+
+**Reasons:**
+- `ReconcileError` - The reconciliation of the resource has failed, but will be retried
+
+### Ready Condition
+
+Indicates whether the istio-cni-node DaemonSet is ready.
+
+**Reasons:**
+- `Healthy` - The CNI plugin is fully reconciled and all components are ready
+- `DaemonSetNotReady` - The istio-cni-node DaemonSet is not ready
+- `ReadinessCheckFailed` - The DaemonSet readiness status could not be ascertained
+
+## Examples
+
+### Basic Installation
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+```
+
+### Ambient Profile
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+```
+
+### Custom Configuration
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+  values:
+    cni:
+      cniBinDir: /var/lib/cni/bin
+      cniConfDir: /etc/cni/net.d
+      excludeNamespaces:
+        - kube-system
+        - kube-public
+      repair:
+        enabled: true
+        deletePods: true
+```
+
+## Usage Scenarios
+
+### OpenShift Deployment
+
+On OpenShift, the CNI plugin is required because OpenShift enforces stricter security policies:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: openshift
+  namespace: istio-cni
+```
+
+### Ambient Mesh Setup
+
+For Ambient mesh deployments, deploy IstioCNI before the Istio control plane:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+  values:
+    cni:
+      ambient:
+        enabled: true
+        dnsCapture: true
+```
+
+## Related Resources
+
+- [Istio](/api/istio) - Requires IstioCNI as a dependency on OpenShift and for Ambient mesh
+- [ZTunnel](/api/ztunnel) - Used together with IstioCNI for Ambient mesh
+- [Profiles](/api/profiles) - Available installation profiles
+- [CNI Plugin](https://istio.io/latest/docs/setup/additional-setup/cni/) - Official Istio CNI documentation

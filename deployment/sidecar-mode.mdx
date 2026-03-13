@@ -1,0 +1,259 @@
+---
+title: Deploying Traditional Sidecar Mode
+description: Deploy Istio in traditional sidecar mode using Sail Operator
+---
+
+Sidecar mode is the traditional Istio deployment model where an Envoy proxy is injected as a sidecar container alongside each application pod in the mesh.
+
+## Overview
+
+In sidecar mode, each pod in your mesh gets an Envoy proxy sidecar that handles all inbound and outbound traffic for the application. This provides:
+
+- Mutual TLS (mTLS) encryption between services
+- Traffic management and routing
+- Request-level telemetry
+- Policy enforcement
+
+## Prerequisites
+
+- Kubernetes cluster version 1.27 or later (or OpenShift 4.14+)
+- Sail Operator installed (see [Helm Installation](/deployment/helm-installation))
+- `kubectl` or `oc` CLI configured
+
+## Basic Sidecar Deployment
+
+### 1. Create the Istio Namespace
+
+Create the namespace where the control plane will be installed:
+
+```bash
+kubectl create namespace istio-system
+```
+
+### 2. Deploy the Istio Control Plane
+
+Create an `Istio` resource to deploy the control plane:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+```
+
+Apply the configuration:
+
+```bash
+kubectl apply -f istio.yaml
+```
+
+### 3. Verify the Installation
+
+Check that the control plane is deployed and healthy:
+
+```bash
+kubectl get istio -n istio-system
+```
+
+Expected output:
+
+```
+NAME      REVISIONS   READY   IN USE   ACTIVE REVISION   STATUS    VERSION    AGE
+default   1           1       0        default           Healthy   v1.29.1    23s
+```
+
+Verify the istiod deployment:
+
+```bash
+kubectl get pods -n istio-system
+```
+
+## Enabling Sidecar Injection
+
+### Automatic Injection (Recommended)
+
+Label namespaces to enable automatic sidecar injection:
+
+```bash
+kubectl label namespace <your-namespace> istio-injection=enabled
+```
+
+For example:
+
+```bash
+kubectl create namespace bookinfo
+kubectl label namespace bookinfo istio-injection=enabled
+```
+
+All new pods created in this namespace will automatically get the sidecar injected.
+
+### Manual Injection
+
+For one-time injection without labeling the namespace:
+
+```bash
+istioctl kube-inject -f <your-app.yaml> | kubectl apply -f -
+```
+
+### Verify Sidecar Injection
+
+Deploy an application and verify it has 2 containers (app + sidecar):
+
+```bash
+kubectl get pods -n <your-namespace>
+```
+
+You should see `2/2` in the READY column:
+
+```
+NAME                          READY   STATUS    RESTARTS   AGE
+productpage-v1-abc123-xyz     2/2     Running   0          1m
+```
+
+Inspect a pod to see both containers:
+
+```bash
+kubectl describe pod <pod-name> -n <your-namespace>
+```
+
+## Customizing the Control Plane
+
+The `spec.values` field accepts Istio Helm configuration values:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    global:
+      mtls:
+        enabled: true
+      logging:
+        level: "default:info"
+    meshConfig:
+      trustDomain: example.com
+      accessLogFile: /dev/stdout
+      enableTracing: true
+    pilot:
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2048Mi
+```
+
+### Common Configuration Options
+
+**Enable debug logging:**
+
+```yaml
+values:
+  global:
+    logging:
+      level: "default:debug"
+```
+
+**Configure resource limits:**
+
+```yaml
+values:
+  pilot:
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2048Mi
+      limits:
+        cpu: 1000m
+        memory: 4096Mi
+```
+
+**Set custom trust domain:**
+
+```yaml
+values:
+  meshConfig:
+    trustDomain: my-company.com
+    trustDomainAliases:
+      - my-company.net
+```
+
+## Revision-Based Deployment
+
+For canary upgrades, use `RevisionBased` update strategy:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+---
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: default
+spec:
+  targetRef:
+    kind: Istio
+    name: default
+```
+
+This creates a revision-specific control plane, allowing you to gradually migrate workloads between Istio versions.
+
+## Next Steps
+
+- [Deploy gateways](https://istio.io/latest/docs/setup/additional-setup/gateway/) for ingress traffic
+- [Configure observability](/operations/observability) with Prometheus and Grafana
+- Learn about [update strategies](/concepts/update-strategies)
+- Explore [ambient mode](/deployment/ambient-mode) as an alternative
+
+## Troubleshooting
+
+### Sidecar Not Injected
+
+1. Verify namespace is labeled:
+   ```bash
+   kubectl get namespace <namespace> --show-labels
+   ```
+
+2. Check webhook configuration:
+   ```bash
+   kubectl get mutatingwebhookconfiguration
+   ```
+
+3. Check istiod logs:
+   ```bash
+   kubectl logs -n istio-system -l app=istiod
+   ```
+
+### Control Plane Not Ready
+
+Check the Istio resource status:
+
+```bash
+kubectl get istio -n istio-system -o yaml
+```
+
+Review events:
+
+```bash
+kubectl get events -n istio-system --sort-by='.lastTimestamp'
+```
+
+## Related Resources
+
+- [Istio Helm Chart Values](https://artifacthub.io/packages/helm/istio-official/istiod?modal=values)
+- [Istio API Reference](/api/istio)

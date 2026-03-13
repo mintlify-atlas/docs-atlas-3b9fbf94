@@ -1,0 +1,150 @@
+---
+title: IstioRevision
+description: IstioRevision resource API reference for the Sail Operator
+---
+
+The `IstioRevision` resource represents a single revision of an Istio Service Mesh deployment. Users shouldn't create `IstioRevision` objects directly. Instead, they should create an `Istio` object and allow the operator to create the underlying `IstioRevision` object(s).
+
+<Note>
+IstioRevision resources are managed automatically by the Sail Operator when you create an Istio resource. Direct manipulation of IstioRevision resources is not recommended.
+</Note>
+
+## Specification
+
+### Metadata
+
+<ParamField path="apiVersion" type="string" required>
+  `sailoperator.io/v1`
+</ParamField>
+
+<ParamField path="kind" type="string" required>
+  `IstioRevision`
+</ParamField>
+
+<ParamField path="metadata.name" type="string" required>
+  Name of the IstioRevision resource. When the name is 'default', the `spec.values.revision` field must be empty. Otherwise, `spec.values.revision` must match `metadata.name`.
+</ParamField>
+
+### Spec
+
+<ParamField path="spec.version" type="string" required>
+  Defines the version of Istio to install. Must be one of the supported versions.
+  
+  **Supported versions include:** v1.29.1, v1.29.0, v1.28.5, v1.28.4, v1.28.3, v1.28.2, v1.28.1, v1.28.0, v1.27.8, v1.27.7, v1.27.6, v1.27.5, v1.27.4, v1.27.3, v1.27.2, v1.27.1, v1.27.0, and others.
+</ParamField>
+
+<ParamField path="spec.namespace" type="string" required>
+  Namespace to which the Istio components should be installed.
+  
+  <Warning>This field is immutable after creation.</Warning>
+</ParamField>
+
+<ParamField path="spec.values" type="object">
+  Defines the values to be passed to the Helm charts when installing Istio. See [Helm Values](/api/helm-values) for all available options.
+</ParamField>
+
+### Status
+
+The status subresource provides information about the current state of the IstioRevision.
+
+<ParamField path="status.state" type="string">
+  Reports the current state of the object. Possible values include:
+  
+  - `Healthy` - The control plane is fully reconciled and all components are ready
+  - `ReconcileError` - The reconciliation of the resource has failed, but will be retried
+  - `IstiodNotReady` - The control plane is fully reconciled, but istiod is not ready
+  - `RemoteIstiodNotReady` - The remote istiod is not ready
+  - `ReadinessCheckFailed` - Istiod readiness status could not be ascertained
+  - `NameAlreadyExists` - An IstioRevisionTag with the same name already exists
+</ParamField>
+
+<ParamField path="status.observedGeneration" type="integer">
+  The most recent generation observed for this IstioRevision object.
+</ParamField>
+
+<ParamField path="status.conditions" type="array">
+  Represents the latest available observations of the object's current state. Common condition types include:
+  
+  - **Reconciled**: Whether the controller has successfully reconciled the resources
+  - **Ready**: Whether the control plane is ready to handle requests
+  - **InUse**: Whether any workload is configured to use this revision
+  - **DependenciesHealthy**: Whether required dependencies (IstioCNI, ZTunnel) are healthy
+</ParamField>
+
+## Conditions
+
+### Reconciled Condition
+
+Indicates whether the controller has successfully reconciled the resources defined through the CR.
+
+**Reasons:**
+- `ReconcileError` - The reconciliation of the resource has failed, but will be retried
+
+### Ready Condition
+
+Indicates whether the control plane Deployment, StatefulSet, etc. resources are Ready.
+
+**Reasons:**
+- `Healthy` - All components are ready
+- `IstiodNotReady` - The control plane is fully reconciled, but istiod is not ready
+- `RemoteIstiodNotReady` - The remote istiod is not ready
+- `ReadinessCheckFailed` - Istiod readiness status could not be ascertained
+
+### InUse Condition
+
+Indicates whether any workload is configured to use the revision.
+
+**Reasons:**
+- `ReferencedByWorkloads` - The revision is referenced by at least one pod or namespace
+- `NotReferencedByAnything` - The revision is not referenced by any pod or namespace
+- `UsageCheckFailed` - The operator could not check whether any workloads use the revision
+
+### DependenciesHealthy Condition
+
+Indicates whether the dependencies required by this IstioRevision are healthy.
+
+**Reasons:**
+- `IstioCNINotFound` - The IstioCNI resource is not found
+- `IstioCNINotHealthy` - The IstioCNI resource is not healthy
+- `ZTunnelNotFound` - The ZTunnel resource is not found
+- `ZTunnelNotHealthy` - The ZTunnel resource is not healthy
+- `DependencyCheckFailed` - The status of the dependencies could not be ascertained
+
+## Examples
+
+<Note>
+IstioRevision resources are typically created automatically by the operator. The examples below are for reference only.
+</Note>
+
+### Default Revision
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevision
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+```
+
+### Named Revision
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevision
+metadata:
+  name: v1-29-1
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    revision: v1-29-1
+```
+
+## Related Resources
+
+- [Istio](/api/istio) - Parent resource that creates IstioRevision objects
+- [IstioRevisionTag](/api/istio-revision-tag) - Provides stable revision tags
+- [IstioCNI](/api/istio-cni) - CNI plugin dependency
+- [ZTunnel](/api/ztunnel) - Ambient mesh tunnel dependency

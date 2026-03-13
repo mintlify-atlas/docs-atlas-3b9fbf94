@@ -1,0 +1,1143 @@
+---
+title: Troubleshooting
+description: Diagnose and resolve common issues with Sail Operator and Istio deployments
+---
+
+This guide helps diagnose and resolve common issues encountered when operating the Sail Operator and Istio.
+
+## General Troubleshooting Approach
+
+1. **Check resource status** - Review conditions on Istio/IstioRevision/IstioCNI/ZTunnel resources
+2. **Inspect logs** - Examine operator and control plane logs
+3. **Verify configuration** - Ensure values are valid and consistent
+4. **Check dependencies** - Verify prerequisites and component health
+5. **Review recent changes** - Identify what changed before the issue appeared
+
+## Quick Diagnostics
+
+### Health Check Commands
+
+```bash
+# Check all Istio resources
+kubectl get istio,istiorevision,istiocni,ztunnel --all-namespaces
+
+# Check operator status
+kubectl get pods -n sail-operator
+kubectl logs -n sail-operator -l app.kubernetes.io/name=sail-operator --tail=100
+
+# Check control plane status
+kubectl get pods -n istio-system
+kubectl logs -n istio-system -l app=istiod --tail=100
+
+# Check proxy status
+istioctl proxy-status
+
+# Analyze configuration
+istioctl analyze -A
+```
+
+### Viewing Resource Conditions
+
+```bash
+# Describe resources to see conditions
+kubectl describe istio default
+kubectl describe istiorevision <revision-name>
+kubectl describe istiocni default
+
+# Get status in YAML format
+kubectl get istio default -o yaml | yq '.status'
+```
+
+## Installation Issues
+
+### Operator Not Starting
+
+**Symptoms:**
+- Sail Operator pod in `CrashLoopBackOff` or `Error` state
+- Operator logs show initialization errors
+
+**Common Causes:**
+
+1. **Insufficient RBAC permissions**
+
+```bash
+# Check for permission errors in logs
+kubectl logs -n sail-operator -l app.kubernetes.io/name=sail-operator | grep -i "forbidden\|unauthorized"
+
+# Verify ClusterRole exists
+kubectl get clusterrole sail-operator
+
+# Verify ClusterRoleBinding
+kubectl get clusterrolebinding | grep sail-operator
+```
+
+**Resolution:** Reinstall operator with correct RBAC:
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/istio-ecosystem/sail-operator/main/chart/samples/operator-install.yaml
+```
+
+2. **CRD installation failure**
+
+```bash
+# Check if CRDs are installed
+kubectl get crd | grep sailoperator.io
+
+# Expected output:
+istios.sailoperator.io
+istiorevisions.sailoperator.io
+istiorevisiontags.sailoperator.io
+istiocnis.sailoperator.io
+ztunnels.sailoperator.io
+```
+
+**Resolution:** Manually install CRDs:
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/istio-ecosystem/sail-operator/main/chart/crds/
+```
+
+3. **Image pull errors**
+
+```bash
+kubectl describe pod -n sail-operator <operator-pod>
+```
+
+**Resolution:** Check image pull secrets and registry accessibility.
+
+### Istio Resource Stuck in Reconciling
+
+**Symptoms:**
+- Istio resource shows `Reconciling` status indefinitely
+- IstioRevision not created
+
+**Diagnosis:**
+
+```bash
+# Check resource status
+kubectl get istio default -o yaml | yq '.status.conditions'
+
+# Check operator logs for reconciliation errors
+kubectl logs -n sail-operator -l app.kubernetes.io/name=sail-operator | grep -A 10 "error"
+```
+
+**Common Causes:**
+
+1. **Invalid version specified**
+
+```yaml
+status:
+  conditions:
+    - type: Reconciled
+      status: "False"
+      reason: ReconcileError
+      message: "version v1.20.0 not supported"
+```
+
+**Resolution:** Use supported version:
+
+```bash
+# List supported versions
+kubectl get istio default -o yaml | yq '.spec.version'
+
+# Update to valid version
+kubectl patch istio default --type='merge' -p '{"spec":{"version":"v1.29.1"}}'
+```
+
+2. **Namespace doesn't exist**
+
+```yaml
+status:
+  conditions:
+    - message: "namespace istio-system not found"
+```
+
+**Resolution:**
+
+```bash
+kubectl create namespace istio-system
+```
+
+3. **Helm chart rendering failure**
+
+Check operator logs for detailed error:
+
+```bash
+kubectl logs -n sail-operator -l app.kubernetes.io/name=sail-operator | grep "helm"
+```
+
+**Resolution:** Fix invalid values in `spec.values`.
+
+### IstioCNI Installation Failure
+
+**Symptoms:**
+- IstioCNI pods not starting
+- `IstioCNI` resource shows `NotReady`
+
+**Diagnosis:**
+
+```bash
+kubectl get istiocni default
+kubectl describe istiocni default
+kubectl get pods -n istio-cni
+kubectl logs -n istio-cni -l k8s-app=istio-cni-node
+```
+
+**Common Causes:**
+
+1. **Incorrect CNI directories**
+
+```yaml
+values:
+  cni:
+    cniBinDir: /opt/cni/bin  # Wrong path for your platform
+    cniConfDir: /etc/cni/net.d
+```
+
+**Resolution for OpenShift:**
+
+```yaml
+values:
+  cni:
+    cniBinDir: /var/lib/cni/bin
+    cniConfDir: /etc/cni/multus/net.d
+```
+
+2. **SELinux issues (OpenShift)**
+
+Check for `Permission denied` in logs:
+
+```bash
+kubectl logs -n istio-cni <cni-pod> | grep -i "permission denied"
+```
+
+**Resolution:** CNI must run with privileged security context (automatically configured on OpenShift).
+
+3. **Node selector mismatch**
+
+CNI DaemonSet not scheduling on nodes:
+
+```bash
+kubectl get ds -n istio-cni
+# Check DESIRED vs CURRENT
+```
+
+**Resolution:** Adjust node selector:
+
+```yaml
+values:
+  cni:
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: kubernetes.io/os
+                  operator: In
+                  values:
+                    - linux
+```
+
+## Upgrade Issues
+
+### InPlace Upgrade Stuck
+
+**Symptoms:**
+- Old istiod pod not terminating
+- New version not coming up
+
+**Diagnosis:**
+
+```bash
+kubectl get istio default
+kubectl get pods -n istio-system
+kubectl describe deployment -n istio-system istiod-<revision>
+```
+
+**Common Causes:**
+
+1. **Resource constraints**
+
+New pod can't start due to insufficient resources:
+
+```bash
+kubectl describe pod -n istio-system <new-istiod-pod>
+# Look for: "0/3 nodes are available: insufficient memory/cpu"
+```
+
+**Resolution:** Increase node resources or reduce istiod resource requests.
+
+2. **Image pull failure**
+
+```bash
+kubectl describe pod -n istio-system <new-istiod-pod> | grep -A 5 "Events:"
+```
+
+**Resolution:** Verify chart URLs in `versions.yaml` are accessible.
+
+3. **Validation webhook blocking changes**
+
+```bash
+kubectl logs -n istio-system -l app=istiod | grep "validation"
+```
+
+**Resolution:** Temporarily disable validation:
+
+```yaml
+values:
+  global:
+    configValidation: false
+```
+
+### RevisionBased Upgrade Issues
+
+#### New Revision Not Created
+
+**Diagnosis:**
+
+```bash
+kubectl get istiorevision
+kubectl logs -n sail-operator -l app.kubernetes.io/name=sail-operator | grep -i "revision"
+```
+
+**Resolution:** Check for conflicts with existing resources:
+
+```bash
+# Check for naming conflicts
+kubectl get deployment -n istio-system | grep istiod
+
+# Delete orphaned resources if necessary (carefully!)
+kubectl delete deployment -n istio-system <orphaned-deployment>
+```
+
+#### Old Revision Not Deleted
+
+**Symptoms:**
+- Old `IstioRevision` remains after grace period
+- Old istiod pod still running
+
+**Diagnosis:**
+
+```bash
+kubectl get istiorevision <old-revision> -o yaml | yq '.status.conditions[] | select(.type=="InUse")'
+```
+
+**Common Causes:**
+
+1. **Workloads still using old revision**
+
+```bash
+# Find pods still using old revision
+kubectl get pods --all-namespaces -o json | \
+  jq -r '.items[] | select(.metadata.labels."istio.io/rev"=="<old-revision>") | "\(.metadata.namespace)/\(.metadata.name)"'
+```
+
+**Resolution:** Update namespace labels and restart pods:
+
+```bash
+kubectl label namespace <namespace> istio.io/rev=<new-revision> --overwrite
+kubectl rollout restart deployment -n <namespace>
+```
+
+2. **IstioRevisionTag referencing old revision**
+
+```bash
+kubectl get istiorevisiontag -o yaml | grep -A 5 "<old-revision>"
+```
+
+**Resolution:** Update or delete the tag.
+
+## Proxy Injection Issues
+
+### Sidecar Not Injected
+
+**Symptoms:**
+- Pods don't have `istio-proxy` container
+- Only 1 container in pod instead of 2
+
+**Diagnosis:**
+
+```bash
+kubectl get pod -n bookinfo <pod> -o jsonpath='{.spec.containers[*].name}'
+# Should show: app-container istio-proxy
+```
+
+**Common Causes:**
+
+1. **Namespace not labeled**
+
+```bash
+kubectl get namespace bookinfo --show-labels
+```
+
+**Resolution:**
+
+For default revision:
+```bash
+kubectl label namespace bookinfo istio-injection=enabled
+```
+
+For specific revision:
+```bash
+kubectl label namespace bookinfo istio.io/rev=<revision-name>
+```
+
+2. **Pod has injection disabled annotation**
+
+```bash
+kubectl get pod <pod> -o yaml | grep sidecar.istio.io/inject
+```
+
+**Resolution:** Remove annotation:
+
+```bash
+kubectl annotate pod <pod> sidecar.istio.io/inject-
+# Then restart pod
+```
+
+3. **Mutating webhook not configured**
+
+```bash
+kubectl get mutatingwebhookconfiguration | grep istio
+```
+
+**Resolution:** Verify IstioRevision is healthy and webhook exists.
+
+### Injection Failing with Errors
+
+**Symptoms:**
+- Pods stuck in `ContainerCreating`
+- Events show injection errors
+
+**Diagnosis:**
+
+```bash
+kubectl describe pod -n bookinfo <pod>
+kubectl logs -n istio-system -l app=istiod | grep "injection"
+```
+
+**Common Causes:**
+
+1. **Template rendering failure**
+
+Invalid annotations or labels:
+
+```bash
+kubectl get pod <pod> -o yaml | grep -A 5 "sidecar.istio.io"
+```
+
+**Resolution:** Fix invalid annotation values.
+
+2. **Resource limits conflict**
+
+```yaml
+# Pod specifies resources that conflict with injection
+resources:
+  limits:
+    memory: "64Mi"  # Too low for proxy
+```
+
+**Resolution:** Increase limits or configure proxy resource requests:
+
+```yaml
+values:
+  global:
+    proxy:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 2000m
+          memory: 1024Mi
+```
+
+## Configuration Issues
+
+### Values Validation Errors
+
+**Symptoms:**
+- Error when applying Istio resource
+- Validation webhook rejects changes
+
+**Common Validation Errors:**
+
+1. **Namespace mismatch**
+
+```yaml
+spec:
+  namespace: istio-system
+  values:
+    global:
+      istioNamespace: istio-prod  # ERROR: Must match spec.namespace
+```
+
+**Resolution:**
+
+```yaml
+values:
+  global:
+    istioNamespace: istio-system  # Must match spec.namespace
+```
+
+2. **Invalid enum value**
+
+```yaml
+spec:
+  version: v1.20.0  # ERROR: Not in supported versions list
+```
+
+**Resolution:** Use valid version from supported list.
+
+3. **Immutable field change**
+
+```bash
+# Error: spec.namespace is immutable
+```
+
+**Resolution:** Delete and recreate resource (disruptive) or deploy new Istio resource with different name.
+
+### MeshConfig Issues
+
+**Symptoms:**
+- Proxies not applying mesh configuration
+- Certificate errors
+
+**Diagnosis:**
+
+```bash
+# View rendered meshconfig
+kubectl get configmap -n istio-system istio-<revision> -o yaml
+
+# Check proxy configuration
+istioctl proxy-config all <pod>.<namespace>
+```
+
+**Common Causes:**
+
+1. **Trust domain mismatch**
+
+```yaml
+values:
+  meshConfig:
+    trustDomain: cluster.local
+    # Workloads expecting different trust domain
+```
+
+**Resolution:** Ensure trust domains match or add aliases:
+
+```yaml
+meshConfig:
+  trustDomain: cluster.local
+  trustDomainAliases:
+    - old-domain.local
+```
+
+2. **Invalid CA configuration**
+
+```bash
+kubectl logs -n istio-system -l app=istiod | grep -i "certificate\|ca"
+```
+
+**Resolution:** Verify CA certificates are correctly mounted and valid.
+
+## Ambient Mode Issues
+
+### ZTunnel Connection Issues
+
+**Symptoms:**
+- Ambient workloads can't communicate
+- ZTunnel logs show connection errors
+
+**Diagnosis:**
+
+```bash
+# Check ztunnel status
+kubectl get ztunnel default
+kubectl get pods -n ztunnel
+kubectl logs -n ztunnel <ztunnel-pod>
+
+# Verify workload enrollment
+istioctl ztunnel-config workloads -n ztunnel | grep <namespace>
+```
+
+**Common Causes:**
+
+1. **Namespace not labeled for ambient**
+
+```bash
+kubectl get namespace bookinfo -o yaml | grep dataplane-mode
+```
+
+**Resolution:**
+
+```bash
+kubectl label namespace bookinfo istio.io/dataplane-mode=ambient
+```
+
+2. **ZTunnel DaemonSet not running on all nodes**
+
+```bash
+kubectl get ds -n ztunnel
+# DESIRED should equal CURRENT
+```
+
+**Resolution:** Check node taints and tolerations:
+
+```yaml
+values:
+  ztunnel:
+    tolerations:
+      - operator: Exists
+```
+
+3. **Long-lived connection resets during upgrade**
+
+**Symptoms:** Connections drop when ZTunnel pods restart.
+
+**Resolution:** Use `OnDelete` update strategy and drain nodes:
+
+```yaml
+values:
+  ztunnel:
+    updateStrategy:
+      type: OnDelete
+    terminationGracePeriodSeconds: 300
+```
+
+Then manually upgrade:
+
+```bash
+# For each node
+kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
+kubectl delete pod -n ztunnel <ztunnel-pod-on-node>
+kubectl wait --for=condition=Ready pod -n ztunnel -l app=ztunnel --timeout=5m
+kubectl uncordon <node>
+```
+
+See [Upgrading Guide](/operations/upgrading#ztunnel-upgrade-considerations) for details.
+
+### Waypoint Proxy Issues
+
+**Symptoms:**
+- Layer 7 features not working
+- Traffic not passing through waypoint
+
+**Diagnosis:**
+
+```bash
+# List waypoint proxies
+kubectl get gateway -n <namespace>
+
+# Check waypoint pods
+kubectl get pods -n <namespace> -l gateway.networking.k8s.io/gateway-name=<waypoint-name>
+
+# View waypoint logs
+kubectl logs -n <namespace> -l gateway.networking.k8s.io/gateway-name=<waypoint-name>
+```
+
+**Common Causes:**
+
+1. **Waypoint not referenced by service**
+
+```bash
+kubectl get service <service> -o yaml | grep useWaypoint
+```
+
+**Resolution:** Add annotation:
+
+```bash
+kubectl annotate service <service> istio.io/use-waypoint=<waypoint-name>
+```
+
+2. **Gateway resource misconfigured**
+
+Check Gateway resource validity:
+
+```bash
+istioctl analyze -n <namespace>
+```
+
+## Performance Issues
+
+### High Control Plane CPU/Memory
+
+**Symptoms:**
+- Istiod consuming excessive resources
+- Frequent OOMKilled events
+
+**Diagnosis:**
+
+```bash
+# Check resource usage
+kubectl top pod -n istio-system
+
+# Check istiod metrics
+kubectl exec -n istio-system deploy/istiod-<revision> -- \
+  curl http://localhost:15014/metrics | grep pilot_xds
+```
+
+**Common Causes:**
+
+1. **Too many XDS pushes**
+
+Check push rate:
+
+```promql
+rate(pilot_xds_pushes[5m])
+```
+
+**Resolution:** Reduce configuration churn:
+- Avoid frequent ConfigMap/Secret updates
+- Use proper selectors in discovery
+- Configure `discoverySelectors` to limit scope
+
+```yaml
+values:
+  meshConfig:
+    discoverySelectors:
+      - matchLabels:
+          istio-discovery: enabled
+```
+
+2. **Insufficient resources**
+
+**Resolution:** Increase resource limits:
+
+```yaml
+values:
+  pilot:
+    resources:
+      requests:
+        cpu: 1000m
+        memory: 4Gi
+      limits:
+        cpu: 2000m
+        memory: 8Gi
+```
+
+3. **Large number of services/endpoints**
+
+Check service count:
+
+```bash
+kubectl get services --all-namespaces | wc -l
+```
+
+**Resolution:** Consider splitting into multiple meshes or use hierarchical namespaces.
+
+### High Proxy Memory Usage
+
+**Symptoms:**
+- Application pods using excessive memory
+- Frequent proxy restarts
+
+**Diagnosis:**
+
+```bash
+kubectl top pod -n <namespace> <pod> --containers
+kubectl exec <pod> -c istio-proxy -- curl http://localhost:15000/stats/prometheus | grep memory
+```
+
+**Common Causes:**
+
+1. **Too many listeners/clusters**
+
+```bash
+istioctl proxy-config listener <pod>.<namespace> | wc -l
+istioctl proxy-config cluster <pod>.<namespace> | wc -l
+```
+
+**Resolution:** Use `Sidecar` resources to limit scope:
+
+```yaml
+apiVersion: networking.istio.io/v1
+kind: Sidecar
+metadata:
+  name: default
+  namespace: bookinfo
+spec:
+  egress:
+    - hosts:
+        - "./*"
+        - "istio-system/*"
+```
+
+2. **Insufficient proxy resources**
+
+**Resolution:**
+
+```yaml
+values:
+  global:
+    proxy:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 2000m
+          memory: 1024Mi
+```
+
+### Slow Request Performance
+
+**Symptoms:**
+- Increased latency after installing Istio
+- Timeout errors
+
+**Diagnosis:**
+
+```bash
+# Check proxy stats
+kubectl exec <pod> -c istio-proxy -- \
+  curl http://localhost:15000/stats/prometheus | grep duration
+
+# Analyze with istioctl
+istioctl analyze -A
+```
+
+**Common Causes:**
+
+1. **Mutual TLS overhead**
+
+Check if mTLS is required:
+
+```bash
+istioctl authn tls-check <pod>.<namespace>
+```
+
+**Resolution:** Use PERMISSIVE mode during migration:
+
+```yaml
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    mode: PERMISSIVE
+```
+
+2. **Excessive retries**
+
+Check proxy retry configuration:
+
+```bash
+istioctl proxy-config route <pod>.<namespace> -o json | jq '.[] | select(.retryPolicy)'
+```
+
+**Resolution:** Tune retry policies in `VirtualService`.
+
+## Network Connectivity Issues
+
+### Service-to-Service Communication Failure
+
+**Symptoms:**
+- `Connection refused` or `Connection reset` errors
+- Services can't reach each other
+
+**Diagnosis:**
+
+```bash
+# Test connectivity
+kubectl exec <source-pod> -c <container> -- curl -v http://<service>
+
+# Check endpoints
+kubectl get endpoints <service> -n <namespace>
+
+# Verify proxy routing
+istioctl proxy-config cluster <pod>.<namespace> --fqdn <service>.<namespace>.svc.cluster.local
+```
+
+**Common Causes:**
+
+1. **Service port naming**
+
+Istio requires port names with protocol prefix:
+
+```yaml
+# WRONG
+ports:
+  - port: 80
+    name: web
+
+# CORRECT
+ports:
+  - port: 80
+    name: http-web  # Must start with protocol
+```
+
+**Resolution:** Update service definition:
+
+```bash
+kubectl edit service <service>
+# Add protocol prefix to port names: http-, grpc-, tcp-, etc.
+```
+
+2. **AuthorizationPolicy blocking traffic**
+
+```bash
+# Check authorization policies
+kubectl get authorizationpolicies -A
+
+# Test with policy temporarily disabled
+kubectl delete authorizationpolicy <policy>
+```
+
+3. **PeerAuthentication requiring mTLS**
+
+Source doesn't have sidecar/ambient mode enabled:
+
+```bash
+kubectl get peerauthentication -A
+```
+
+**Resolution:** Add source to mesh or use PERMISSIVE mode.
+
+### External Service Access Issues
+
+**Symptoms:**
+- Can't reach external APIs
+- DNS resolution failures
+
+**Diagnosis:**
+
+```bash
+# Test external access
+kubectl exec <pod> -- curl -v https://httpbin.org/get
+
+# Check outbound traffic policy
+kubectl get cm -n istio-system istio-<revision> -o yaml | grep outboundTrafficPolicy
+```
+
+**Common Causes:**
+
+1. **OutboundTrafficPolicy set to REGISTRY_ONLY**
+
+**Resolution:** Change to ALLOW_ANY or add ServiceEntry:
+
+```yaml
+# Option 1: Allow all external traffic
+values:
+  meshConfig:
+    outboundTrafficPolicy:
+      mode: ALLOW_ANY
+
+# Option 2: Add ServiceEntry for specific external service
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: httpbin-ext
+spec:
+  hosts:
+    - httpbin.org
+  ports:
+    - number: 443
+      name: https
+      protocol: HTTPS
+  location: MESH_EXTERNAL
+  resolution: DNS
+```
+
+2. **DNS issues**
+
+```bash
+kubectl exec <pod> -- nslookup httpbin.org
+```
+
+**Resolution:** Enable DNS proxying:
+
+```yaml
+values:
+  meshConfig:
+    defaultConfig:
+      proxyMetadata:
+        ISTIO_META_DNS_CAPTURE: "true"
+```
+
+## Certificate and mTLS Issues
+
+### Certificate Expiration
+
+**Symptoms:**
+- `x509: certificate has expired` errors
+- Services failing with TLS errors
+
+**Diagnosis:**
+
+```bash
+# Check certificate expiration
+istioctl proxy-config secret <pod>.<namespace> -o json | \
+  jq -r '.dynamicActiveSecrets[] | select(.name=="default") | .secret.tlsCertificate.certificateChain.inlineBytes' | \
+  base64 -d | openssl x509 -noout -text | grep -A 2 Validity
+```
+
+**Resolution:**
+
+```bash
+# Restart pod to get new certificate
+kubectl delete pod <pod> -n <namespace>
+
+# Check cert-manager or CA configuration
+kubectl logs -n istio-system -l app=istiod | grep -i cert
+```
+
+### mTLS Not Working
+
+**Symptoms:**
+- Plain text traffic when expecting mTLS
+- Certificate verification failures
+
+**Diagnosis:**
+
+```bash
+# Check TLS mode
+istioctl authn tls-check <pod>.<namespace> <target-service>.<namespace>.svc.cluster.local
+```
+
+**Common Causes:**
+
+1. **Mixed modes (sidecar and non-sidecar)**
+
+Source or destination lacks proxy:
+
+```bash
+# Check if both pods have proxies
+kubectl get pod <pod> -o jsonpath='{.spec.containers[*].name}'
+```
+
+**Resolution:** Add both to mesh or use PERMISSIVE mode.
+
+2. **Conflicting PeerAuthentication policies**
+
+```bash
+kubectl get peerauthentication -A
+```
+
+**Resolution:** Ensure policies don't conflict. Namespace-level policies override mesh-level.
+
+## Debugging Tools
+
+### istioctl debug
+
+```bash
+# Comprehensive proxy information
+istioctl proxy-config all <pod>.<namespace>
+
+# Bootstrap configuration
+istioctl proxy-config bootstrap <pod>.<namespace>
+
+# Listener details
+istioctl proxy-config listener <pod>.<namespace> --address 0.0.0.0 --port 15006 -o json
+
+# Route details
+istioctl proxy-config route <pod>.<namespace> --name <route-name> -o json
+
+# Cluster (service) details
+istioctl proxy-config cluster <pod>.<namespace> --fqdn <service-fqdn> -o json
+
+# Endpoint details
+istioctl proxy-config endpoint <pod>.<namespace> --cluster <cluster-name>
+```
+
+### Proxy Admin Interface
+
+```bash
+# Port-forward to proxy admin port
+kubectl port-forward <pod> 15000:15000
+
+# Access admin interface
+curl http://localhost:15000/help
+curl http://localhost:15000/stats/prometheus
+curl http://localhost:15000/config_dump
+curl http://localhost:15000/clusters
+curl http://localhost:15000/listeners
+```
+
+### Enable Debug Logging
+
+**For istiod:**
+
+```yaml
+values:
+  global:
+    logging:
+      level: "default:debug,ads:debug,xds:debug"
+```
+
+**For proxies (dynamic):**
+
+```bash
+# Enable debug on specific proxy
+istioctl proxy-config log <pod>.<namespace> --level debug
+
+# For specific component
+istioctl proxy-config log <pod>.<namespace> --level http:debug
+
+# Reset to default
+istioctl proxy-config log <pod>.<namespace> --level warning
+```
+
+### Bug Report Collection
+
+```bash
+# Collect full bug report
+istioctl bug-report \
+  --include-namespaces=istio-system,bookinfo \
+  --output-directory=/tmp/istio-bug-report
+
+# Archive is created with all relevant logs and configs
+```
+
+## Getting Help
+
+### Community Resources
+
+- **GitHub Issues**: https://github.com/istio-ecosystem/sail-operator/issues
+- **Slack**: #sail-operator channel in Istio Slack
+- **Istio Discuss**: https://discuss.istio.io/
+- **Stack Overflow**: Tag with `istio` and `sail-operator`
+
+### Filing Bug Reports
+
+When filing bugs, include:
+
+1. Sail Operator version
+2. Istio version
+3. Kubernetes/OpenShift version
+4. Platform (AWS, GCP, on-prem, etc.)
+5. Resource definitions (sanitized)
+6. Logs from operator and istiod
+7. Steps to reproduce
+8. Output of `istioctl bug-report`
+
+### Useful Commands Summary
+
+```bash
+# Quick health check
+kubectl get istio,istiorevision,pods -n istio-system
+istioctl proxy-status
+istioctl analyze -A
+
+# Logs
+kubectl logs -n sail-operator -l app.kubernetes.io/name=sail-operator
+kubectl logs -n istio-system -l app=istiod
+
+# Configuration
+kubectl get cm -n istio-system istio-<revision> -o yaml
+istioctl proxy-config all <pod>.<namespace>
+
+# Debugging
+istioctl bug-report
+istioctl experimental describe pod <pod> -n <namespace>
+```
+
+## Further Reading
+
+- [Configuration Guide](/operations/configuration)
+- [Upgrading Guide](/operations/upgrading)
+- [Observability Guide](/operations/observability)
+- [Istio Troubleshooting](https://istio.io/latest/docs/ops/diagnostic-tools/)
+- [Ambient Troubleshooting](https://istio.io/latest/docs/ambient/usage/troubleshoot/)
